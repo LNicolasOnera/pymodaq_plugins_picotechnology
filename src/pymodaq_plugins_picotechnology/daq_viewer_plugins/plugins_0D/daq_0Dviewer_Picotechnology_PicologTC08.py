@@ -1,4 +1,5 @@
 import numpy as np
+import ctypes
 
 from pymodaq_utils.utils import ThreadCommand
 from pymodaq_data.data import DataToExport
@@ -48,19 +49,31 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
     ]
 
     def get_connected_serials(self):
-        temp_pico = PicoLogTC08()
-        list_serial_numbers = list(temp_pico.dictionary_of_detected_units.keys())
-        temp_pico.close_all_units()  # release the handle(s) opened just for discovery
+        self._release_discovered_units()  # ferme tout handle orphelin d'un appel précédent
+
+        self._tc08dll = ctypes.CDLL(PicoLogTC08.DLL_PATH)
+        self.discovered_units = PicoLogTC08.discover_units(self._tc08dll, close_after=False)
+        list_serial_numbers = list(self.discovered_units.keys())
+        print(f"liste serial num {list_serial_numbers}")
         self.settings.child('device_serial_number').setLimits(list_serial_numbers)
+
+    def _release_discovered_units(self):
+        """Referme tout handle issu d'une découverte précédente qui n'aurait jamais été
+        consommé par ini_detector — évite qu'un handle orphelin bloque une future énumération."""
+        if self._tc08dll and self.discovered_units:
+            for h in self.discovered_units.values():
+                try:
+                    self._tc08dll.usb_tc08_close_unit(h)
+                except Exception:
+                    pass
+        self.discovered_units = {}
 
     def ini_attributes(self):
         self.controller: PicoLogTC08 = None
-        # self.serial = None
+        self._tc08dll = None
+        self.discovered_units = {}
         self.get_connected_serials()
         self.serial = self.settings.child('device_serial_number').value() or None
-
-        #TODO declare here attributes you want/need to init with a default value
-        pass
 
     def commit_settings(self, param: Parameter):
         """Apply the consequences of a change of value in the detector settings
@@ -78,11 +91,32 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
 
     def ini_detector(self, controller=None):
         """Detector communication initialization"""
+        info = ""
+        initialized = False
 
         if self.is_master:
-            if self.is_master:
-                self.controller = PicoLogTC08(self.serial) if self.serial else PicoLogTC08()
+            try:
+                if self.serial and self.serial in self.discovered_units:
+                    handle = self.discovered_units.pop(self.serial)
+                    self.controller = PicoLogTC08(serial_number=self.serial, handle=handle, tc08dll=self._tc08dll)
+                else:
+                    # L'unité demandée n'était pas dans le dernier scan (débranchée/rebranchée
+                    # entre-temps par ex.) : on relance une découverte fraîche avant d'abandonner.
+                    self.get_connected_serials()
+                    if self.serial and self.serial in self.discovered_units:
+                        handle = self.discovered_units.pop(self.serial)
+                        self.controller = PicoLogTC08(serial_number=self.serial, handle=handle, tc08dll=self._tc08dll)
+                    else:
+                        self.controller = PicoLogTC08()  # se connecte à la première unité disponible
+
+                self._release_discovered_units()  # ferme les unités découvertes mais non retenues
                 initialized = bool(self.controller)
+                info = "Whatever info you want to log"
+
+            except ConnectionError as e:
+                self.emit_status(ThreadCommand('Update_Status', [f"Connexion au PicoLog impossible : {e}"]))
+                info = str(e)
+                initialized = False
         else:
             self.controller = controller
             initialized = True
@@ -101,6 +135,7 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
         """Terminate the communication protocol"""
         if self.is_master and self.controller is not None:
             self.controller.close_all_units()
+        self._release_discovered_units()
 
     def grab_data(self, Naverage=1, **kwargs):
         """Start a grab from the detector

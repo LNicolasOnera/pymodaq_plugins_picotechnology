@@ -5,52 +5,96 @@ Created on Thu Jul 17 16:24:12 2025
 @author: bpons
 """
 
-# TO DO ONCE WITH A NEW COMPUTER :
-# This program do not need anything to run except PicoSDK to download from PicoTech official website.
-# See : https://www.picotech.com/downloads and then go to PicoLog Data Loggers/TC-08/Software.
-# The downloaded file has to be run with administrators access, and it works perfectly with the default configuration.
-# When it is done, find the path to "usbtc08.dll" in your computer and copy/paste it to replace mine in the __init__
-# section below from PicoLogTC08 class. Your path should be very similar to mine.
-# When this has been done for your computer everything should run perfectly !
-
-# Note : A python wrapper was also made by PicoTech, see my tutorial to install their packages and use it if you prefer.
-# See : https://github.com/picotech/picosdk-python-wrappers/tree/master/usbtc08Examples and my documentation word file.
-
 import ctypes
 import time
 
 class PicoLogTC08:
     """Class for communicating with a PicoLog TC-08 connected to a USB port of the computer."""
 
-    def __init__(self, serial_number : str = None):
-        # The path below should be adapted for your computer.
-        self.tc08dll = ctypes.CDLL("C:\Program Files\Pico Technology\SDK\lib/usbtc08.dll")
-    
+    # The path below should be adapted for your computer.
+    DLL_PATH = r"C:\Program Files\Pico Technology\SDK\lib\usbtc08.dll"
+
+    def __init__(self, serial_number: str = None, handle: int = None, tc08dll=None):
+        """
+        serial_number : numéro de série de l'unité à utiliser (optionnel).
+        handle, tc08dll : si les deux sont fournis, on suppose que ce handle a déjà été ouvert
+            (typiquement via PicoLogTC08.discover_units(close_after=False)) et on l'utilise
+            directement, sans repasser par une phase de découverte complète.
+        """
+        self.tc08dll = tc08dll or ctypes.CDLL(self.DLL_PATH)
+
         # Those values can be changed or adapted if required.
-        self.buffer_length = 64 # It means that the buffer should be checked with get_temp at least every 64*interval_pico_log
-        # (indeed : interval_pico_log <= interval_reading_buffer <= self.buffer_length * interval_pico_log)
+        self.buffer_length = 64
         self.string_length = 16
-        self.format_string_length = 256 # At least 256 but works well for now.
+        self.format_string_length = 256
         self.units = ctypes.c_int16(0)  # Units value (0: °C, 1: °F, 2: K, 3: Rankine)
         self.dictionary_of_detected_units = {}
-        self.get_dictionary_of_detected_units() # Make sure to call close_all_units() at the end of you program !
+
+        if handle is not None:
+            # Handle déjà ouvert et déjà identifié : réutilisé tel quel, sans nouvelle énumération.
+            self.handle = handle
+            if serial_number:
+                self.dictionary_of_detected_units = {serial_number: handle}
+            print(f"Réutilisation du handle déjà ouvert ({serial_number}).")
+            return
+
+        self.get_dictionary_of_detected_units()  # Make sure to call close_all_units() at the end of your program!
         if serial_number:
             if serial_number in self.dictionary_of_detected_units:
                 self.handle = self.dictionary_of_detected_units[serial_number]
                 print(f"Ouverture {serial_number}")
-            else :
+            else:
                 raise ConnectionError(f"Serial number {serial_number} not found in detected units.")
-        else :
+        else:
             if self.dictionary_of_detected_units:
                 for unit in self.dictionary_of_detected_units:
                     self.handle = self.dictionary_of_detected_units[unit]
                     print(f"Ouverture {unit}")
                     break
-            else :
+            else:
                 raise ConnectionError("No unit found, check connection and driver installation.")
 
-    # The following methods represents every native function from a TC08 device except the asynchronous and the
-    # legacy mode ones.
+    @classmethod
+    def discover_units(cls, tc08dll=None, close_after: bool = True) -> dict:
+        """Enumère les unités disponibles et renvoie {serial_number: handle}.
+
+        IMPORTANT : le SDK usbtc08 n'offre aucune fonction permettant de lister les numéros de
+        série sans ouvrir chaque unité. usb_tc08_open_unit() EST le mécanisme d'énumération :
+        chaque appel ouvre l'unité suivante disponible et lui attribue un handle. Il n'y a donc
+        pas moyen de contourner cette ouverture unité par unité (la variante asynchrone
+        usb_tc08_open_unit_async/_progress évite seulement de bloquer le thread pendant le
+        téléchargement du firmware, elle n'évite pas l'ouverture elle-même).
+
+        close_after=True (par défaut) : referme chaque handle juste après lecture du numéro de
+            série -> pour un simple listing (menu déroulant).
+        close_after=False : laisse les handles ouverts et les renvoie, pour qu'ils soient
+            réutilisables directement -> évite une seconde phase d'ouverture complète juste après.
+        """
+        dll = tc08dll or ctypes.CDLL(cls.DLL_PATH)
+        found = {}
+        while True:
+            handle = dll.usb_tc08_open_unit()
+            if handle <= 0:
+                break
+            string_obj = ctypes.c_int8 * 16
+            string = string_obj()
+            status = dll.usb_tc08_get_unit_info2(handle, string, 16, ctypes.c_int16(4))
+            if status == 0:
+                dll.usb_tc08_close_unit(handle)
+                break
+            serial_number = bytes(string[:status]).decode()
+            found[serial_number] = handle
+            if close_after:
+                dll.usb_tc08_close_unit(handle)
+        if found:
+            print(f"Dictionary of detected units : {found}")
+        else:
+            print("No unit detected.")
+        return found
+
+    # ---- Le reste de la classe est inchangé (open_unit, close_unit, get_dictionary_of_detected_units,
+    #      close_all_units, get_unit_info, get_formatted_info, get_last_error, set_channel_specs,
+    #      run_streaming, get_single, get_temp, et vos fonctions d'exemple en bas de fichier) ----
 
     def open_unit(self) -> int:
         """Opens the USB TC-08 unit and gets a valid USB handle. Creates attribute self.handle"""
