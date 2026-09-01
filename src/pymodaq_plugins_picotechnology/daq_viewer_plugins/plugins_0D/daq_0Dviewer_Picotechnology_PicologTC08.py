@@ -1,5 +1,5 @@
-import numpy as np
-import ctypes
+import os
+import time
 
 from pymodaq_utils.utils import ThreadCommand
 from pymodaq_data.data import DataToExport
@@ -49,29 +49,20 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
     ]
 
     def get_connected_serials(self):
-        self._release_discovered_units()  # ferme tout handle orphelin d'un appel précédent
+        # Pur listing : on ouvre/ferme chaque unité juste pour lire son numéro de série,
+        # sans rien garder ouvert. Sûr à appeler depuis ini_attributes(), même sur une
+        # instance jetable.
+        found = PicoLogTC08.discover_units(close_after=True)
+        self.emit_status(ThreadCommand('Update_Status', [f"Découverte : {list(found.keys())}"]))
+        self.settings.child('device_serial_number').setLimits(list(found.keys()))
 
-        self._tc08dll = ctypes.CDLL(PicoLogTC08.DLL_PATH)
-        self.discovered_units = PicoLogTC08.discover_units(self._tc08dll, close_after=False)
-        list_serial_numbers = list(self.discovered_units.keys())
-        print(f"liste serial num {list_serial_numbers}")
-        self.settings.child('device_serial_number').setLimits(list_serial_numbers)
-
-    def _release_discovered_units(self):
-        """Referme tout handle issu d'une découverte précédente qui n'aurait jamais été
-        consommé par ini_detector — évite qu'un handle orphelin bloque une future énumération."""
-        if self._tc08dll and self.discovered_units:
-            for h in self.discovered_units.values():
-                try:
-                    self._tc08dll.usb_tc08_close_unit(h)
-                except Exception:
-                    pass
-        self.discovered_units = {}
 
     def ini_attributes(self):
+        import os
+        print(f"PID du process plugin : {os.getpid()}", flush=True)
         self.controller: PicoLogTC08 = None
-        self._tc08dll = None
-        self.discovered_units = {}
+        self.emit_status(ThreadCommand('Update_Status', [f"ini_attributes() appelé, PID={os.getpid()}"]))
+
         self.get_connected_serials()
         self.serial = self.settings.child('device_serial_number').value() or None
 
@@ -90,29 +81,17 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
         #     A faire mais pour toutes les channels actives
 
     def ini_detector(self, controller=None):
-        """Detector communication initialization"""
         info = ""
-        initialized = False
-
         if self.is_master:
             try:
-                if self.serial and self.serial in self.discovered_units:
-                    handle = self.discovered_units.pop(self.serial)
-                    self.controller = PicoLogTC08(serial_number=self.serial, handle=handle, tc08dll=self._tc08dll)
-                else:
-                    # L'unité demandée n'était pas dans le dernier scan (débranchée/rebranchée
-                    # entre-temps par ex.) : on relance une découverte fraîche avant d'abandonner.
-                    self.get_connected_serials()
-                    if self.serial and self.serial in self.discovered_units:
-                        handle = self.discovered_units.pop(self.serial)
-                        self.controller = PicoLogTC08(serial_number=self.serial, handle=handle, tc08dll=self._tc08dll)
-                    else:
-                        self.controller = PicoLogTC08()  # se connecte à la première unité disponible
-
-                self._release_discovered_units()  # ferme les unités découvertes mais non retenues
+                self.emit_status(ThreadCommand('Update_Status', ["ini_detector() : tentative d'ouverture"]))
+                self.controller = PicoLogTC08(serial_number=self.serial) if self.serial else PicoLogTC08()
                 initialized = bool(self.controller)
+                if initialized:
+                    connected_serial = list(self.controller.dictionary_of_detected_units.keys())[0]
+                    self.settings.child('device_serial_number').setValue(connected_serial)
+                    self.emit_status(ThreadCommand('Update_Status', [f"Connecté : {connected_serial}"]))
                 info = "Whatever info you want to log"
-
             except ConnectionError as e:
                 self.emit_status(ThreadCommand('Update_Status', [f"Connexion au PicoLog impossible : {e}"]))
                 info = str(e)
@@ -120,22 +99,18 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
         else:
             self.controller = controller
             initialized = True
-
-        # TODO for your custom plugin (optional) initialize viewers panel with the future type of data
-        self.dte_signal_temp.emit(DataToExport(name='myplugin',
-                                               data=[DataFromPlugins(name='Mock1',
-                                                                    data=[np.array([0]), np.array([0])],
-                                                                    dim='Data0D',
-                                                                    labels=['Mock1', 'label2'])]))
-
-        info = "Whatever info you want to log"
         return info, initialized
 
     def close(self):
-        """Terminate the communication protocol"""
+        self.emit_status(ThreadCommand('Update_Status',
+                                       [f"close() appelé, PID={os.getpid()}, is_master={self.is_master}, controller={self.controller}"]))
         if self.is_master and self.controller is not None:
             self.controller.close_all_units()
-        self._release_discovered_units()
+            self.emit_status(ThreadCommand('Update_Status', ["close_all_units() terminé"]))
+        else:
+            print(
+                f"[{time.strftime('%H:%M:%S')}] close() : rien à fermer (is_master={self.is_master}, controller={self.controller})",
+                flush=True)
 
     def grab_data(self, Naverage=1, **kwargs):
         """Start a grab from the detector
@@ -173,11 +148,6 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
 
     def stop(self):
         """Stop the current grab hardware wise if necessary"""
-        ## TODO for your custom plugin
-        raise NotImplementedError  # when writing your own plugin remove this line
-        self.controller.your_method_to_stop_acquisition()  # when writing your own plugin replace this line
-        self.emit_status(ThreadCommand('Update_Status', ['Some info you want to log']))
-        ##############################
         return ''
 
 

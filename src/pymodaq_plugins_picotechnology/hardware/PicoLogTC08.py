@@ -8,11 +8,28 @@ Created on Thu Jul 17 16:24:12 2025
 import ctypes
 import time
 
+import logging
+logger = logging.getLogger(__name__)
+
 class PicoLogTC08:
     """Class for communicating with a PicoLog TC-08 connected to a USB port of the computer."""
 
     # The path below should be adapted for your computer.
     DLL_PATH = r"C:\Program Files\Pico Technology\SDK\lib\usbtc08.dll"
+
+    _open_handles = {}
+    @classmethod
+    def close_all_stray_handles(cls, tc08dll=None):
+        """Ferme tout handle connu du process, peu importe quelle instance l'a ouvert.
+        À appeler avant toute nouvelle tentative de connexion pour repartir propre."""
+        for serial, (handle, dll) in list(cls._open_handles.items()):
+            try:
+                (dll or tc08dll).usb_tc08_close_unit(handle)
+                logger.info(f"Handle orphelin fermé pour {serial}")
+            except Exception as e:
+                logger.info(f"Echec fermeture handle orphelin pour {serial}")
+            finally:
+                cls._open_handles.pop(serial, None)
 
     def __init__(self, serial_number: str = None, handle: int = None, tc08dll=None):
         """
@@ -29,6 +46,9 @@ class PicoLogTC08:
         self.format_string_length = 256
         self.units = ctypes.c_int16(0)  # Units value (0: °C, 1: °F, 2: K, 3: Rankine)
         self.dictionary_of_detected_units = {}
+
+        # Nettoyage avant toute nouvelle ouverture
+        PicoLogTC08.close_all_stray_handles(self.tc08dll)
 
         if handle is not None:
             # Handle déjà ouvert et déjà identifié : réutilisé tel quel, sans nouvelle énumération.
@@ -55,46 +75,46 @@ class PicoLogTC08:
                 raise ConnectionError("No unit found, check connection and driver installation.")
 
     @classmethod
-    def discover_units(cls, tc08dll=None, close_after: bool = True) -> dict:
-        """Enumère les unités disponibles et renvoie {serial_number: handle}.
-
-        IMPORTANT : le SDK usbtc08 n'offre aucune fonction permettant de lister les numéros de
-        série sans ouvrir chaque unité. usb_tc08_open_unit() EST le mécanisme d'énumération :
-        chaque appel ouvre l'unité suivante disponible et lui attribue un handle. Il n'y a donc
-        pas moyen de contourner cette ouverture unité par unité (la variante asynchrone
-        usb_tc08_open_unit_async/_progress évite seulement de bloquer le thread pendant le
-        téléchargement du firmware, elle n'évite pas l'ouverture elle-même).
+    def discover_units(cls, tc08dll=None, close_after: bool = True, retries: int = 5, delay: float = 0.5) -> dict:
+        """Énumère les unités disponibles et renvoie {serial_number: handle}.
 
         close_after=True (par défaut) : referme chaque handle juste après lecture du numéro de
             série -> pour un simple listing (menu déroulant).
         close_after=False : laisse les handles ouverts et les renvoie, pour qu'ils soient
             réutilisables directement -> évite une seconde phase d'ouverture complète juste après.
+        retries/delay : certains drivers usbtc08 ont besoin d'un court délai après la fermeture
+            d'un handle avant qu'une nouvelle énumération ne retrouve l'unité. On retente donc
+            plusieurs fois avant de conclure qu'aucune unité n'est disponible.
         """
+        import time
         dll = tc08dll or ctypes.CDLL(cls.DLL_PATH)
-        found = {}
-        while True:
-            handle = dll.usb_tc08_open_unit()
-            if handle <= 0:
-                break
-            string_obj = ctypes.c_int8 * 16
-            string = string_obj()
-            status = dll.usb_tc08_get_unit_info2(handle, string, 16, ctypes.c_int16(4))
-            if status == 0:
-                dll.usb_tc08_close_unit(handle)
-                break
-            serial_number = bytes(string[:status]).decode()
-            found[serial_number] = handle
-            if close_after:
-                dll.usb_tc08_close_unit(handle)
-        if found:
-            print(f"Dictionary of detected units : {found}")
-        else:
-            print("No unit detected.")
-        return found
+        cls.close_all_stray_handles(dll)
 
-    # ---- Le reste de la classe est inchangé (open_unit, close_unit, get_dictionary_of_detected_units,
-    #      close_all_units, get_unit_info, get_formatted_info, get_last_error, set_channel_specs,
-    #      run_streaming, get_single, get_temp, et vos fonctions d'exemple en bas de fichier) ----
+        for attempt in range(retries):
+            found = {}
+            while True:
+                handle = dll.usb_tc08_open_unit()
+                if handle <= 0:
+                    break
+                string_obj = ctypes.c_int8 * 16
+                string = string_obj()
+                status = dll.usb_tc08_get_unit_info2(handle, string, 16, ctypes.c_int16(4))
+                if status == 0:
+                    dll.usb_tc08_close_unit(handle)
+                    break
+                serial_number = bytes(string[:status]).decode()
+                found[serial_number] = handle
+                if close_after:
+                    dll.usb_tc08_close_unit(handle)
+
+            if found:
+                logger.info(f"[{time.strftime('%H:%M:%S')}] Dictionary of detected units : {found}")
+                return found
+
+            if attempt < retries - 1:
+                time.sleep(delay)
+        logger.info(f"[{time.strftime('%H:%M:%S')}] No unit detected")
+        return {}
 
     def open_unit(self) -> int:
         """Opens the USB TC-08 unit and gets a valid USB handle. Creates attribute self.handle"""
@@ -109,6 +129,7 @@ class PicoLogTC08:
     
     def close_unit(self, handle : int = None):
         """Closes the handle. Note that if no handle is specified, it tries to close the unit with the self.handle attribute"""
+        print("close")
         if not handle :
             handle = self.handle
         status = self.tc08dll.usb_tc08_close_unit(handle)
@@ -158,21 +179,25 @@ class PicoLogTC08:
             print(f"Minimum time interval : {interval} ms.")
             return interval
 
-    def get_dictionary_of_detected_units(self):
+    def get_dictionary_of_detected_units(self, retries: int = 5, delay: float = 0.5):
         """Opens every unit available and link their serial number to their handle.
         Creates self.dictionary_of_detected_units but need to call close_all_units at the end of your program."""
-        while True:
-            try:
-                handle = self.open_unit()
-                serial_number = self.get_unit_info()
-                self.dictionary_of_detected_units[serial_number] = handle
-            except Exception as e :
-                # print(f"Error getting dictionary of detected units : {e}")
-                break
-        if self.dictionary_of_detected_units:
-            print(f"Dictionary of detected units : {self.dictionary_of_detected_units}")
-        else :
-            print("No unit detected.")
+        logger.info(f"[{time.strftime('%H:%M:%S')}] début découverte")
+        for attempt in range(retries):
+            self.dictionary_of_detected_units = {}
+            while True:
+                try:
+                    handle = self.open_unit()
+                    serial_number = self.get_unit_info()
+                    self.dictionary_of_detected_units[serial_number] = handle
+                except Exception:
+                    break
+            if self.dictionary_of_detected_units:
+                logger.info(f"[{time.strftime('%H:%M:%S')}] Dictionary of detected units : {self.dictionary_of_detected_units}")
+                return
+            if attempt < retries - 1:
+                time.sleep(delay)
+        logger.info(f"[{time.strftime('%H:%M:%S')}] No unit detected")
 
     def close_all_units(self):
         """Closes all units opened with get_dictionary_of_detected_units method."""
