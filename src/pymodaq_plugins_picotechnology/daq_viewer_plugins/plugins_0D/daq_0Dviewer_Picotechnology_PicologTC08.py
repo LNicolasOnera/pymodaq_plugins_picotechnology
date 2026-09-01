@@ -33,7 +33,7 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
 
     """
     params = comon_parameters + [
-        {'title': 'Device serial number :', 'name': 'device_serial_number', 'type': 'list'},
+        {'title': 'Device serial number :', 'name': 'device_serial_number', 'type': 'str', 'value':"A0138/766"},
         {'title': 'TC type :', 'name': 'tc_type', 'type': 'str', 'value': 'K', 'readonly': True},
         {'title': 'Activated Channels', 'name': 'activated_channels', 'type': 'group', 'children': [
             {'title': 'Channel 1 :', 'name': 'channel_1', 'type': 'bool'},
@@ -48,40 +48,52 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
     ]
     def ini_attributes(self):
         self.controller: PicoLogTC08 = None
-        # Détecte les numéros de série sans garder d'unité ouverte
-        self.serials = PicoLogTC08.enumerate_serial_numbers()
-        if self.serials:
-            self.settings.child("device_serial_number").setLimits(self.serials)
-        else:
-            self.settings.child("device_serial_number").setLimits(["No device found"])
+        self.serial_change = False
+        self.serial = self.settings.child("device_serial_number").value()
+        print(self.serial)
 
     def commit_settings(self, param: Parameter):
-        if param.name() == "device_serial_number":
-            if self.controller is not None:
-                # Device déjà ouvert : fermer et rouvrir
-                self.controller.close_all_units()
-                chosen = param.value()
-                self.controller = PicoLogTC08(serial_number=chosen)
+        if param.name() == 'device_serial_number':
+            old_serial = self.serial
+            self.serial = param.value()
+            if old_serial != self.serial:
+                if self.controller is not None:
+                    # Le device était ouvert, on le ferme et on rouvre
+                    self.close()
+                    try:
+                        self.controller = PicoLogTC08(self.serial)
+                        print(f"Picolog {self.serial} ouvert avec succès.")
+                    except ConnectionError as e:
+                        self.controller = None
+                        print(f"Échec d'ouverture : {e}")
+                else:
+                    # Le device n'était pas ouvert (init échoué).
+                    # On met juste à jour le serial, il faudra cliquer sur Init.
+                    print("Numéro de série mis à jour. Cliquez sur Init pour connecter.")
         # elif param.name() == "tc_type":
         #     self.controller.set_default_parameters()
         #     A faire mais pour toutes les channels actives
 
     def ini_detector(self, controller=None):
         if self.is_master:
-            chosen = self.settings["device_serial_number"]
-            self.controller = PicoLogTC08(serial_number=chosen)
-            # ... configurer les channels, etc.
-            initialized = self.controller.handle > 0
+            try:
+                self.controller = PicoLogTC08(self.serial)
+                initialized = True
+            except ConnectionError as e:
+                self.controller = None
+                initialized = False
+                print(f"Initialisation échouée : {e}")
         else:
             self.controller = controller
             initialized = True
-        return f"PicoLog TC-08 {chosen}", initialized
+        return f"PicoLog TC-08 {self.serial}", initialized
 
     def close(self):
         """Terminate the communication protocol"""
         if self.is_master and self.controller is not None:
-            self.controller.close_all_units()  # ferme tout (ici seul le handle actif est pertinent)
+            self.controller.close_unit()
             self.controller = None
+            print("close")
 
     def grab_data(self, Naverage=1, **kwargs):
         """Start a grab from the detector

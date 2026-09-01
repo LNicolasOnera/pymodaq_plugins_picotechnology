@@ -24,7 +24,7 @@ class PicoLogTC08:
 
     def __init__(self, serial_number : str = None):
         # The path below should be adapted for your computer.
-        self.tc08dll = ctypes.CDLL("C:\Program Files\Pico Technology\SDK\lib/usbtc08.dll")
+        self.tc08dll = ctypes.CDLL(r"C:\Program Files\Pico Technology\SDK\lib\usbtc08.dll")
     
         # Those values can be changed or adapted if required.
         self.buffer_length = 64 # It means that the buffer should be checked with get_temp at least every 64*interval_pico_log
@@ -32,36 +32,53 @@ class PicoLogTC08:
         self.string_length = 16
         self.format_string_length = 256 # At least 256 but works well for now.
         self.units = ctypes.c_int16(0)  # Units value (0: °C, 1: °F, 2: K, 3: Rankine)
-        self.dictionary_of_detected_units = {}
-        self.get_dictionary_of_detected_units() # Make sure to call close_all_units() at the end of you program !
-        if serial_number:
-            if serial_number in self.dictionary_of_detected_units:
-                self.handle = self.dictionary_of_detected_units[serial_number]
-                print(f"Ouverture {serial_number}")
-            else :
-                raise ConnectionError(f"Serial number {serial_number} not found in detected units.")
-        else :
-            if self.dictionary_of_detected_units:
-                for unit in self.dictionary_of_detected_units:
-                    self.handle = self.dictionary_of_detected_units[unit]
-                    print(f"Ouverture {unit}")
-                    break
-            else :
-                raise ConnectionError("No unit found, check connection and driver installation.")
+        self.open_unit_by_serial(serial_number)
 
     # The following methods represents every native function from a TC08 device except the asynchronous and the
     # legacy mode ones.
+    def read_serial(self, handle: int) -> str:
+        """Reads the serial number from an open handle."""
+        string = (ctypes.c_int8 * self.string_length)()
+        status = self.tc08dll.usb_tc08_get_unit_info2(handle, string, self.string_length, ctypes.c_int16(4))
+        return bytes(string[:status]).decode().strip('\x00')
 
-    def open_unit(self) -> int:
-        """Opens the USB TC-08 unit and gets a valid USB handle. Creates attribute self.handle"""
-        self.handle = self.tc08dll.usb_tc08_open_unit()
-        if self.handle == -1:
-            self.get_last_error()
-            raise ConnectionError("Error opening a unit.")
-        elif self.handle == 0 :
-            raise ConnectionError("No more unit found.")
-        else:
-            return self.handle
+    """Si un seul picolog connecté"""
+    # def open_unit_by_serial(self, serial_number: str):
+    #     if not serial_number:
+    #         raise ConnectionError("No serial number provided.")
+    #     handle = self.tc08dll.usb_tc08_open_unit()
+    #     if handle <= 0:
+    #         raise ConnectionError("No unit found, check connection and driver installation.")
+    #     if self.read_serial(handle) == serial_number:
+    #         self.handle = handle
+    #         print(f"Ouverture {serial_number}")
+    #         return handle
+    #     self.tc08dll.usb_tc08_close_unit(handle)
+    #     raise ConnectionError(f"Connected device serial doesn't match {serial_number}.")
+
+    """Si plusieurs picologs connectés"""
+
+    def open_unit_by_serial(self, serial_number: str):
+        if not serial_number:
+            raise ConnectionError("No serial number provided.")
+        seen_handles = set()
+        while True:
+            handle = self.tc08dll.usb_tc08_open_unit()
+            if handle <= 0:
+                break
+            if handle in seen_handles:
+                # Le driver cycle sur les mêmes devices → on s'arrête
+                self.tc08dll.usb_tc08_close_unit(handle)
+                break
+            seen_handles.add(handle)
+            detected = self.read_serial(handle)
+            print(f"  detected={repr(detected)} vs requested={repr(serial_number)}")
+            if detected == serial_number:
+                self.handle = handle
+                print(f"Ouverture {serial_number}")
+                return handle
+            self.tc08dll.usb_tc08_close_unit(handle)
+        raise ConnectionError(f"Serial number {serial_number} not found among connected units.")
     
     def close_unit(self, handle : int = None):
         """Closes the handle. Note that if no handle is specified, it tries to close the unit with the self.handle attribute"""
@@ -146,15 +163,6 @@ class PicoLogTC08:
             print(f"Dictionary of detected units : {self.dictionary_of_detected_units}")
         else :
             print("No unit detected.")
-
-    def close_all_units(self):
-        """Closes all units opened with get_dictionary_of_detected_units method."""
-        if self.dictionary_of_detected_units:
-            for unit in self.dictionary_of_detected_units:
-                handle = self.dictionary_of_detected_units[unit]
-                self.close_unit(handle)
-        else :
-            print("No unit found in self.dictionary_of_detected_units.")
 
     def get_unit_info(self, line_number : int = 4):
         """Retrieves specific information on a unit and presents it as a string."""
