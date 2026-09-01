@@ -32,74 +32,56 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
     # TODO add your particular attributes here if any
 
     """
-    params = comon_parameters+[
-        ## TODO for your custom plugin: elements to be added here as dicts in order to control your custom stage
-        ]
-
+    params = comon_parameters + [
+        {'title': 'Device serial number :', 'name': 'device_serial_number', 'type': 'list'},
+        {'title': 'TC type :', 'name': 'tc_type', 'type': 'str', 'value': 'K', 'readonly': True},
+        {'title': 'Activated Channels', 'name': 'activated_channels', 'type': 'group', 'children': [
+            {'title': 'Channel 1 :', 'name': 'channel_1', 'type': 'bool'},
+            {'title': 'Channel 2 :', 'name': 'channel_2', 'type': 'bool'},
+            {'title': 'Channel 3 :', 'name': 'channel_3', 'type': 'bool'},
+            {'title': 'Channel 4 :', 'name': 'channel_4', 'type': 'bool'},
+            {'title': 'Channel 5 :', 'name': 'channel_5', 'type': 'bool'},
+            {'title': 'Channel 6 :', 'name': 'channel_6', 'type': 'bool'},
+            {'title': 'Channel 7 :', 'name': 'channel_7', 'type': 'bool'},
+            {'title': 'Channel 8 :', 'name': 'channel_8', 'type': 'bool'},
+        ]}
+    ]
     def ini_attributes(self):
-        #  TODO declare the type of the wrapper (and assign it to self.controller) you're going to use for easy
-        #  autocompletion
-        self.controller: PythonWrapperObjectOfYourInstrument = None
-
-        #TODO declare here attributes you want/need to init with a default value
-        pass
+        self.controller: PicoLogTC08 = None
+        # Détecte les numéros de série sans garder d'unité ouverte
+        self.serials = PicoLogTC08.enumerate_serial_numbers()
+        if self.serials:
+            self.settings.child("device_serial_number").setLimits(self.serials)
+        else:
+            self.settings.child("device_serial_number").setLimits(["No device found"])
 
     def commit_settings(self, param: Parameter):
-        """Apply the consequences of a change of value in the detector settings
-
-        Parameters
-        ----------
-        param: Parameter
-            A given parameter (within detector_settings) whose value has been changed by the user
-        """
-        ## TODO for your custom plugin
-        if param.name() == "a_parameter_you've_added_in_self.params":
-           self.controller.your_method_to_apply_this_param_change()  # when writing your own plugin replace this line
-#        elif ...
-        ##
+        if param.name() == "device_serial_number":
+            if self.controller is not None:
+                # Device déjà ouvert : fermer et rouvrir
+                self.controller.close_all_units()
+                chosen = param.value()
+                self.controller = PicoLogTC08(serial_number=chosen)
+        # elif param.name() == "tc_type":
+        #     self.controller.set_default_parameters()
+        #     A faire mais pour toutes les channels actives
 
     def ini_detector(self, controller=None):
-        """Detector communication initialization
-
-        Parameters
-        ----------
-        controller: (object)
-            custom object of a PyMoDAQ plugin (Slave case). None if only one actuator/detector by controller
-            (Master case)
-
-        Returns
-        -------
-        info: str
-        initialized: bool
-            False if initialization failed otherwise True
-        """
-
-        raise NotImplementedError  # TODO when writing your own plugin remove this line and modify the one below
         if self.is_master:
-            self.controller = PythonWrapperObjectOfYourInstrument()  #instantiate you driver with whatever arguments are needed
-            self.controller.open_communication() # call eventual methods
-            initialized = self.controller.a_method_or_atttribute_to_check_if_init()  # TODO
+            chosen = self.settings["device_serial_number"]
+            self.controller = PicoLogTC08(serial_number=chosen)
+            # ... configurer les channels, etc.
+            initialized = self.controller.handle > 0
         else:
             self.controller = controller
             initialized = True
-
-        # TODO for your custom plugin (optional) initialize viewers panel with the future type of data
-        self.dte_signal_temp.emit(DataToExport(name='myplugin',
-                                               data=[DataFromPlugins(name='Mock1',
-                                                                    data=[np.array([0]), np.array([0])],
-                                                                    dim='Data0D',
-                                                                    labels=['Mock1', 'label2'])]))
-
-        info = "Whatever info you want to log"
-        return info, initialized
+        return f"PicoLog TC-08 {chosen}", initialized
 
     def close(self):
         """Terminate the communication protocol"""
-        ## TODO for your custom plugin
-        raise NotImplementedError  # when writing your own plugin remove this line
-        if self.is_master:
-            #  self.controller.your_method_to_terminate_the_communication()  # when writing your own plugin replace this line
-            ...
+        if self.is_master and self.controller is not None:
+            self.controller.close_all_units()  # ferme tout (ici seul le handle actif est pertinent)
+            self.controller = None
 
     def grab_data(self, Naverage=1, **kwargs):
         """Start a grab from the detector

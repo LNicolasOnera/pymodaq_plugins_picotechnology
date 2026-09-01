@@ -76,6 +76,23 @@ class PicoLogTC08:
             pass
         else:
             raise ValueError(f"Closing unit status not listed : {status}.")
+
+    @staticmethod
+    def enumerate_serial_numbers(dll_path: str = "C:\\Program Files\\Pico Technology\\SDK\\lib/usbtc08.dll") -> list:
+        """Detects all connected TC-08 units and returns their serial numbers.
+        Each unit is opened, read, then immediately closed. No handle is left open."""
+        tc08dll = ctypes.CDLL(dll_path)
+        serials = []
+        while True:
+            handle = tc08dll.usb_tc08_open_unit()
+            if handle <= 0:
+                break  # plus aucune unité à énumérer
+            string = (ctypes.c_int8 * 16)()
+            status = tc08dll.usb_tc08_get_unit_info2(handle, string, 16, ctypes.c_int16(4))
+            serial = bytes(string[:status]).decode().strip('\x00')
+            serials.append(serial)
+            tc08dll.usb_tc08_close_unit(handle)  # fermeture immédiate
+        return serials
             
     def stop_streaming(self):
         """Stops the unit streaming."""
