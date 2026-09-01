@@ -33,7 +33,7 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
 
     """
     params = comon_parameters + [
-        {'title': 'Device serial number :', 'name': 'device_serial_number', 'type': 'str', 'value':"A0138/766"},
+        {'title': 'Device serial number :', 'name': 'device_serial_number', 'type': 'str', 'value':"A0138/765"},
         {'title': 'TC type :', 'name': 'tc_type', 'type': 'str', 'value': 'K', 'readonly': True},
         {'title': 'Activated Channels', 'name': 'activated_channels', 'type': 'group', 'children': [
             {'title': 'Channel 1 :', 'name': 'channel_1', 'type': 'bool'},
@@ -57,8 +57,7 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
             old_serial = self.serial
             self.serial = param.value()
             if old_serial != self.serial:
-                if self.controller is not None:
-                    # Le device était ouvert, on le ferme et on rouvre
+                if self.controller is not None:  # ← seulement si déjà ouvert
                     self.close()
                     try:
                         self.controller = PicoLogTC08(self.serial)
@@ -66,27 +65,42 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
                     except ConnectionError as e:
                         self.controller = None
                         print(f"Échec d'ouverture : {e}")
-                else:
-                    # Le device n'était pas ouvert (init échoué).
-                    # On met juste à jour le serial, il faudra cliquer sur Init.
-                    print("Numéro de série mis à jour. Cliquez sur Init pour connecter.")
+                else:  # ← si pas ouvert (init échoué)
+                    print("Serial mis à jour. Cliquez sur Init pour connecter.")
+                    # RIEN ICI, ON N'OUVRE PAS LE DEVICE
         # elif param.name() == "tc_type":
         #     self.controller.set_default_parameters()
         #     A faire mais pour toutes les channels actives
 
     def ini_detector(self, controller=None):
+        print(">>> ini_detector appelé")
         if self.is_master:
-            try:
-                self.controller = PicoLogTC08(self.serial)
+            if self.controller is None:
+                try:
+                    print(f">>> Tentative d'ouverture avec serial={self.serial}")
+                    self.controller = PicoLogTC08(self.serial)
+                    initialized = True
+                    print(">>> Ouverture réussie")
+                except Exception as e:
+                    import traceback
+                    traceback.print_exc()
+                    self.controller = None
+                    initialized = False
+            else:
                 initialized = True
-            except ConnectionError as e:
-                self.controller = None
-                initialized = False
-                print(f"Initialisation échouée : {e}")
         else:
             self.controller = controller
             initialized = True
-        return f"PicoLog TC-08 {self.serial}", initialized
+
+        # self.dte_signal_temp.emit(DataToExport(name='picolog_tc08',
+        #                                        data=[DataFromPlugins(name='TC08',
+        #                                                              data=[np.array([0])],
+        #                                                              dim='Data0D',
+        #                                                              labels=['Temperature'])]))
+
+        info = f"PicoLog TC-08 {self.serial}"
+        print(f">>> Retour ini_detector: initialized={initialized}")
+        return info, initialized
 
     def close(self):
         """Terminate the communication protocol"""
