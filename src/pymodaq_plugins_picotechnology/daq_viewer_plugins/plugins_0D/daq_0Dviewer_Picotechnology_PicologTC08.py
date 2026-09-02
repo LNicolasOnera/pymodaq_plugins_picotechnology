@@ -67,7 +67,7 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
                         print(f"Échec d'ouverture : {e}")
                 else:  # ← si pas ouvert (init échoué)
                     print("Serial mis à jour. Cliquez sur Init pour connecter.")
-                    # RIEN ICI, ON N'OUVRE PAS LE DEVICE
+
         # elif param.name() == "tc_type":
         #     self.controller.set_default_parameters()
         #     A faire mais pour toutes les channels actives
@@ -92,11 +92,11 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
             self.controller = controller
             initialized = True
 
-        # self.dte_signal_temp.emit(DataToExport(name='picolog_tc08',
-        #                                        data=[DataFromPlugins(name='TC08',
-        #                                                              data=[np.array([0])],
-        #                                                              dim='Data0D',
-        #                                                              labels=['Temperature'])]))
+        self.dte_signal_temp.emit(DataToExport(name='picolog_tc08',
+                                               data=[DataFromPlugins(name='TC08',
+                                                                     data=[np.array([0])],
+                                                                     dim='Data0D',
+                                                                     labels=['Temperature'])]))
 
         info = f"PicoLog TC-08 {self.serial}"
         print(f">>> Retour ini_detector: initialized={initialized}")
@@ -104,10 +104,12 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
 
     def close(self):
         """Terminate the communication protocol"""
+        print("close() : entrée", flush=True)
         if self.is_master and self.controller is not None:
+            print("close() : appel de close_unit()...", flush=True)
             self.controller.close_unit()
+            print("close() : close_unit() a répondu", flush=True)
             self.controller = None
-            print("close")
 
     def grab_data(self, Naverage=1, **kwargs):
         """Start a grab from the detector
@@ -120,36 +122,16 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
         kwargs: dict
             others optionals arguments
         """
-        ## TODO for your custom plugin: you should choose EITHER the synchrone or the asynchrone version following
-
-        # synchrone version (blocking function)
-        raise NotImplementedError  # when writing your own plugin remove this line
-        data_tot = self.controller.your_method_to_start_a_grab_snap()
-        self.dte_signal.emit(DataToExport(name='myplugin',
-                                          data=[DataFromPlugins(name='Mock1', data=data_tot,
-                                                                dim='Data0D', labels=['dat0', 'data1'])]))
-        #########################################################
-
-        # asynchrone version (non-blocking function with callback)
-        raise NotImplementedError  # when writing your own plugin remove this line
-        self.controller.your_method_to_start_a_grab_snap(self.callback)  # when writing your own plugin replace this line
-        #########################################################
-
-
-    def callback(self):
-        """optional asynchrone method called when the detector has finished its acquisition of data"""
-        data_tot = self.controller.your_method_to_get_data_from_buffer()
-        self.dte_signal.emit(DataToExport(name='myplugin',
-                                          data=[DataFromPlugins(name='Mock1', data=data_tot,
-                                                                dim='Data0D', labels=['dat0', 'data1'])]))
+        self.controller.set_channel_specs(1, 'K')
+        self.controller.set_mains()
+        self.controller.get_minimum_interval()
+        data_tot = self.controller.get_single()
+        self.dte_signal.emit(DataToExport(name='Temperature',
+                                          data=[DataFromPlugins(name='Channel_1', data=data_tot[1],
+                                                                dim='Data0D', labels=['Channel 1 [°C]'])]))
 
     def stop(self):
         """Stop the current grab hardware wise if necessary"""
-        ## TODO for your custom plugin
-        raise NotImplementedError  # when writing your own plugin remove this line
-        self.controller.your_method_to_stop_acquisition()  # when writing your own plugin replace this line
-        self.emit_status(ThreadCommand('Update_Status', ['Some info you want to log']))
-        ##############################
         return ''
 
 

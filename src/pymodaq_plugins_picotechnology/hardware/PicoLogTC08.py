@@ -21,6 +21,19 @@ import time
 
 class PicoLogTC08:
     """Class for communicating with a PicoLog TC-08 connected to a USB port of the computer."""
+    """Fermeture des instances ouvertes avant toute nouvelle initialisation"""
+    _last_open_handle = None  # (handle, tc08dll)
+    @classmethod
+    def _force_close_previous(cls):
+        if cls._last_open_handle is not None:
+            handle, dll = cls._last_open_handle
+            try:
+                dll.usb_tc08_close_unit(handle)
+                print(f"Handle précédent ({handle}) fermé de force.", flush=True)
+            except Exception as e:
+                print(f"Échec fermeture handle précédent : {e}", flush=True)
+            finally:
+                cls._last_open_handle = None
 
     def __init__(self, serial_number : str = None):
         # The path below should be adapted for your computer.
@@ -42,6 +55,8 @@ class PicoLogTC08:
         self.string_length = 16
         self.format_string_length = 256 # At least 256 but works well for now.
         self.units = ctypes.c_int16(0)  # Units value (0: °C, 1: °F, 2: K, 3: Rankine)
+
+        PicoLogTC08._force_close_previous()
         self.open_unit_by_serial(serial_number)
 
     # The following methods represents every native function from a TC08 device except the asynchronous and the
@@ -68,29 +83,23 @@ class PicoLogTC08:
             try:
                 detected = self.read_serial(handle)
             except Exception:
-                self.tc08dll.usb_tc08_close_unit(handle)  # <-- toujours fermer, même en cas d'erreur
+                self.tc08dll.usb_tc08_close_unit(handle)
                 raise
-            print(f"  detected={repr(detected)} vs requested={repr(serial_number)}")
             if detected == serial_number:
                 self.handle = handle
+                PicoLogTC08._last_open_handle = (handle, self.tc08dll)  # <-- mémoriser
                 print(f"Ouverture {serial_number}")
                 return handle
             self.tc08dll.usb_tc08_close_unit(handle)
         raise ConnectionError(f"Serial number {serial_number} not found among connected units.")
-    
-    def close_unit(self, handle : int = None):
-        """Closes the handle. Note that if no handle is specified, it tries to close the unit with the self.handle attribute"""
-        if not handle :
+
+    def close_unit(self, handle: int = None):
+        if not handle:
             handle = self.handle
         status = self.tc08dll.usb_tc08_close_unit(handle)
-        if status == 0:
-            self.get_last_error()
-            raise ConnectionError(f"Error closing the unit linked to the handle {handle}.")
-        elif status == 1:
-#            print("Unit closed.")
-            pass
-        else:
-            raise ValueError(f"Closing unit status not listed : {status}.")
+        if PicoLogTC08._last_open_handle and PicoLogTC08._last_open_handle[0] == handle:
+            PicoLogTC08._last_open_handle = None
+
 
     @staticmethod
     def enumerate_serial_numbers(dll_path: str = "C:\\Program Files\\Pico Technology\\SDK\\lib/usbtc08.dll") -> list:
@@ -108,17 +117,6 @@ class PicoLogTC08:
             serials.append(serial)
             tc08dll.usb_tc08_close_unit(handle)  # fermeture immédiate
         return serials
-            
-    def stop_streaming(self):
-        """Stops the unit streaming."""
-        status = self.tc08dll.usb_tc08_stop(self.handle)
-        if status == 0:
-            raise ValueError("Invalid parameter.")
-        elif status == 1:
-#            print("Streaming stopped.")
-            pass
-        else:
-            raise ValueError(f"Stop streaming status not listed : {status}.")
     
     def set_mains(self, reject50Hz : bool = True):
         """Sets the mains interference rejection filter to either 50 Hz or 60 Hz. (Default : rejects 50Hz.)"""
@@ -145,91 +143,6 @@ class PicoLogTC08:
         else:
             print(f"Minimum time interval : {interval} ms.")
             return interval
-
-    def get_dictionary_of_detected_units(self):
-        """Opens every unit available and link their serial number to their handle.
-        Creates self.dictionary_of_detected_units but need to call close_all_units at the end of your program."""
-        while True:
-            try:
-                handle = self.open_unit()
-                serial_number = self.get_unit_info()
-                self.dictionary_of_detected_units[serial_number] = handle
-            except Exception as e :
-                # print(f"Error getting dictionary of detected units : {e}")
-                break
-        if self.dictionary_of_detected_units:
-            print(f"Dictionary of detected units : {self.dictionary_of_detected_units}")
-        else :
-            print("No unit detected.")
-
-    def get_unit_info(self, line_number : int = 4):
-        """Retrieves specific information on a unit and presents it as a string."""
-        string_obj = ctypes.c_int8 * self.string_length
-        string = string_obj()
-        if not 0 <= line_number <= 5:
-            raise ValueError(f"Invalid line number value : {line_number}.")
-        line = ctypes.c_int16(line_number)
-        status = self.tc08dll.usb_tc08_get_unit_info2(self.handle, string, self.string_length, line)
-        if status == 0:
-            self.get_last_error()
-            raise ValueError("An error occurred while getting the unit information.")
-        else :
-            # print(f"Unit info : {bytes(string[:status]).decode()}.")
-            return bytes(string[:status]).decode()
-    
-    def get_formatted_info(self) -> str:
-        """Retrieves information on a particular unit and presents it in string form."""
-        unit_format_info_obj = ctypes.c_int8 * self.format_string_length
-        unit_format_info = unit_format_info_obj()
-        status = self.tc08dll.usb_tc08_get_formatted_info(self.handle, unit_format_info, self.format_string_length)
-        if status == 0:
-            print("Too many bytes to copy, change self.format_string_length to a higher value.")
-        elif status == 1:
-            print(f"Formated information for the handle {self.handle} : \n{bytes(unit_format_info).decode()}")
-        else:
-            raise ValueError(f"Formated information status not listed : {status}.")
-        return bytes(unit_format_info).decode()
-    
-    def get_last_error(self):
-        """Returns the last error for a specified unit or for a call to open a unit."""
-        error_code = self.tc08dll.usb_tc08_get_last_error(self.handle)
-        if error_code == 0:
-#            print("No error occurred.")
-            pass
-        elif error_code == 1:
-            raise ConnectionError("The driver does not support the current operating system.")
-        elif error_code == 2:
-            raise ConnectionError("A call to SetChannelSpecs is required.")
-        elif error_code == 3:
-            raise ConnectionError("One or more of the function arguments were invalid.")
-        elif error_code == 4:
-            raise ConnectionError("The hardware version is not supported. Download the latest driver.")
-        elif error_code == 5:
-            raise ConnectionError("An incompatible mix of legacy and non-legacy functions was called "
-                                  "(or usb_tc08_get_single was called while in streaming mode).")
-        elif error_code == 6:
-            raise ConnectionError(" usb_tc08_open_unit_async was called again while a background enumeration "
-                                  "was already in progress.")
-        elif error_code == 7:
-            raise ConnectionError("Cannot get a reply from a USB TC-08.")
-        elif error_code == 8:
-            raise ConnectionError("Unable to download firmware.")
-        elif error_code == 9:
-            raise ConnectionError("Missing or corrupted EEPROM.")
-        elif error_code == 10:
-            raise ConnectionError("Cannot find enumerated device.")
-        elif error_code == 11:
-            raise ConnectionError("A threading function failed.")
-        elif error_code == 12:
-            raise ConnectionError("Can not get USB pipe information.")
-        elif error_code == 13:
-            raise ConnectionError("No calibration date was found.")
-        elif error_code == 14:
-            raise ConnectionError("An old picopp.sys driver was found on the system.")
-        elif error_code == 15:
-            raise ConnectionError("The PC has lost communication with the device.")
-        else:
-            raise ValueError(f"Error code not listed : {error_code}.")
             
     def set_channel_specs(self, channel : int, tc_type : str):
         """Sets up a USB TC-08 channel."""
@@ -248,18 +161,6 @@ class PicoLogTC08:
             pass
         else:
             raise ValueError(f"Channel status not listed : {status}.")
-            
-    def run_streaming(self, interval : int):
-        """Starts the USB TC-08 unit streaming."""
-        # Note : if the time interval passed in argument is shorter than the minimum one (for the configuration),
-        # the PicoLog TC08 will use the latest to avoid errors.
-        selected_interval = ctypes.c_int16(interval)
-        status = self.tc08dll.usb_tc08_run(self.handle, selected_interval)
-        if status == 0:
-            self.get_last_error()
-            raise ConnectionError("An error occured while running the unit streaming.")
-        else:
-            print(f"Time interval between two samples : {status} ms.")
             
     def get_single(self):
         """Converts readings from currently set up channels on demand."""
@@ -298,6 +199,99 @@ class PicoLogTC08:
         else:
             # print(f"There are {status} values in the buffer.")
             return status, temp_buffer[:]
+
+    def run_streaming(self, interval : int):
+        """Starts the USB TC-08 unit streaming."""
+        # Note : if the time interval passed in argument is shorter than the minimum one (for the configuration),
+        # the PicoLog TC08 will use the latest to avoid errors.
+        selected_interval = ctypes.c_int16(interval)
+        status = self.tc08dll.usb_tc08_run(self.handle, selected_interval)
+        if status == 0:
+            self.get_last_error()
+            raise ConnectionError("An error occured while running the unit streaming.")
+        else:
+            print(f"Time interval between two samples : {status} ms.")
+
+    def stop_streaming(self):
+        """Stops the unit streaming."""
+        status = self.tc08dll.usb_tc08_stop(self.handle)
+        if status == 0:
+            raise ValueError("Invalid parameter.")
+        elif status == 1:
+            #            print("Streaming stopped.")
+            pass
+        else:
+            raise ValueError(f"Stop streaming status not listed : {status}.")
+
+    def get_unit_info(self, line_number: int = 4):
+        """Retrieves specific information on a unit and presents it as a string."""
+        string_obj = ctypes.c_int8 * self.string_length
+        string = string_obj()
+        if not 0 <= line_number <= 5:
+            raise ValueError(f"Invalid line number value : {line_number}.")
+        line = ctypes.c_int16(line_number)
+        status = self.tc08dll.usb_tc08_get_unit_info2(self.handle, string, self.string_length, line)
+        if status == 0:
+            self.get_last_error()
+            raise ValueError("An error occurred while getting the unit information.")
+        else:
+            # print(f"Unit info : {bytes(string[:status]).decode()}.")
+            return bytes(string[:status]).decode()
+
+    def get_formatted_info(self) -> str:
+        """Retrieves information on a particular unit and presents it in string form."""
+        unit_format_info_obj = ctypes.c_int8 * self.format_string_length
+        unit_format_info = unit_format_info_obj()
+        status = self.tc08dll.usb_tc08_get_formatted_info(self.handle, unit_format_info,
+                                                          self.format_string_length)
+        if status == 0:
+            print("Too many bytes to copy, change self.format_string_length to a higher value.")
+        elif status == 1:
+            print(f"Formated information for the handle {self.handle} : \n{bytes(unit_format_info).decode()}")
+        else:
+            raise ValueError(f"Formated information status not listed : {status}.")
+        return bytes(unit_format_info).decode()
+
+    def get_last_error(self):
+        """Returns the last error for a specified unit or for a call to open a unit."""
+        error_code = self.tc08dll.usb_tc08_get_last_error(self.handle)
+        if error_code == 0:
+            #            print("No error occurred.")
+            pass
+        elif error_code == 1:
+            raise ConnectionError("The driver does not support the current operating system.")
+        elif error_code == 2:
+            raise ConnectionError("A call to SetChannelSpecs is required.")
+        elif error_code == 3:
+            raise ConnectionError("One or more of the function arguments were invalid.")
+        elif error_code == 4:
+            raise ConnectionError("The hardware version is not supported. Download the latest driver.")
+        elif error_code == 5:
+            raise ConnectionError("An incompatible mix of legacy and non-legacy functions was called "
+                                  "(or usb_tc08_get_single was called while in streaming mode).")
+        elif error_code == 6:
+            raise ConnectionError(" usb_tc08_open_unit_async was called again while a background enumeration "
+                                  "was already in progress.")
+        elif error_code == 7:
+            raise ConnectionError("Cannot get a reply from a USB TC-08.")
+        elif error_code == 8:
+            raise ConnectionError("Unable to download firmware.")
+        elif error_code == 9:
+            raise ConnectionError("Missing or corrupted EEPROM.")
+        elif error_code == 10:
+            raise ConnectionError("Cannot find enumerated device.")
+        elif error_code == 11:
+            raise ConnectionError("A threading function failed.")
+        elif error_code == 12:
+            raise ConnectionError("Can not get USB pipe information.")
+        elif error_code == 13:
+            raise ConnectionError("No calibration date was found.")
+        elif error_code == 14:
+            raise ConnectionError("An old picopp.sys driver was found on the system.")
+        elif error_code == 15:
+            raise ConnectionError("The PC has lost communication with the device.")
+        else:
+            raise ValueError(f"Error code not listed : {error_code}.")
 
     
 # ------------------------------------------------- 
