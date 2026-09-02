@@ -19,37 +19,29 @@ Created on Thu Jul 17 16:24:12 2025
 import ctypes
 import time
 
-import ctypes
-
-
 class PicoLogTC08:
     """Class for communicating with a PicoLog TC-08 connected to a USB port of the computer."""
 
     DLL_PATH = r"C:\Program Files\Pico Technology\SDK\lib\usbtc08.dll"
 
-    # Mémorise le dernier (handle, dll) ouvert avec succès dans ce process, pour pouvoir
-    # le fermer explicitement au prochain essai même si l'instance précédente n'a jamais
-    # vu son close() appelé par PyMoDAQ (comportement confirmé peu fiable côté framework :
-    # à chaque clic sur Init, PyMoDAQ recrée une instance du plugin sans forcément fermer
-    # proprement la précédente).
+    # Un handle actif par serial (pas un slot global) : nécessaire car PyMoDAQ n'appelle
+    # pas toujours close() de façon fiable à la déconnexion, et parce que plusieurs
+    # PicoLog peuvent être connectés/utilisés en parallèle par des modules différents.
     _open_handles = {}  # {serial_number: (handle, tc08dll)}
 
-    def __init__(self, serial_number: str = None):
+    def __init__(self, serial_number: str):
         self.tc08dll = ctypes.CDLL(self.DLL_PATH)
         self.buffer_length = 64
         self.string_length = 16
         self.format_string_length = 256
-        self.units = ctypes.c_int16(0)  # Units value (0: °C, 1: °F, 2: K, 3: Rankine)
+        self.units = ctypes.c_int16(0)  # 0: °C, 1: °F, 2: K, 3: Rankine
         self.handle = None
-
         self.open_unit_by_serial(serial_number)
 
     @classmethod
     def _force_close_stray(cls, serial_number, dll=None):
-        """Ferme uniquement un handle resté enregistré pour CE serial précis (session
-        précédente abandonnée par PyMoDAQ sans close()). Ne touche jamais aux handles
-        d'autres devices, même s'ils sont les derniers ouverts chronologiquement —
-        indispensable pour ne pas couper une connexion active sur un autre PicoLog."""
+        """Referme un handle resté enregistré pour CE serial précis (session précédente
+        abandonnée par PyMoDAQ sans close()), sans toucher aux autres devices."""
         if serial_number in cls._open_handles:
             handle, prev_dll = cls._open_handles.pop(serial_number)
             try:
@@ -64,13 +56,14 @@ class PicoLogTC08:
         status = self.tc08dll.usb_tc08_get_unit_info2(handle, buffer, self.string_length, ctypes.c_int16(4))
         return buffer.value[:status].decode(errors='ignore')
 
-    def open_unit_by_serial(self, serial_number: str = None):
-        if serial_number:
-            PicoLogTC08._force_close_stray(serial_number, self.tc08dll)
+    def open_unit_by_serial(self, serial_number: str):
+        if not serial_number:
+            raise ConnectionError("No serial number provided.")
+
+        PicoLogTC08._force_close_stray(serial_number, self.tc08dll)
 
         opened = []
         found_handle = None
-        found_serial = None
         while True:
             handle = self.tc08dll.usb_tc08_open_unit()
             if handle <= 0:
@@ -82,26 +75,25 @@ class PicoLogTC08:
                 for h in opened:
                     self.tc08dll.usb_tc08_close_unit(h)
                 raise
-            if serial_number is None or detected == serial_number:
+            if detected == serial_number:
                 found_handle = handle
-                found_serial = detected
                 break
 
+        # Referme tout ce qui a été ouvert pendant la recherche, sauf le handle retenu
         for h in opened:
             if h != found_handle:
                 self.tc08dll.usb_tc08_close_unit(h)
 
         if found_handle is None:
-            if serial_number:
-                raise ConnectionError(f"Serial number {serial_number} not found among connected units.")
-            raise ConnectionError("No unit found, check connection and driver installation.")
+            raise ConnectionError(f"Serial number {serial_number} not found among connected units.")
 
         self.handle = found_handle
-        PicoLogTC08._open_handles[found_serial] = (found_handle, self.tc08dll)
-        print(f"Ouverture {found_serial}")
+        PicoLogTC08._open_handles[serial_number] = (found_handle, self.tc08dll)
+        print(f"Ouverture {serial_number}")
         return found_handle
 
     def close_unit(self, handle: int = None):
+        """Closes the handle. Note that if no handle is specified, it tries to close the unit with the self.handle attribute"""
         if not handle:
             handle = self.handle
         status = self.tc08dll.usb_tc08_close_unit(handle)
@@ -112,28 +104,6 @@ class PicoLogTC08:
             raise ConnectionError(f"Error closing the unit linked to the handle {handle}.")
         elif status != 1:
             raise ValueError(f"Closing unit status not listed : {status}.")
-
-    @staticmethod
-    def enumerate_serial_numbers(dll_path: str = None) -> list:
-        """Liste les PicoLog actuellement libres (un device déjà activement connecté par un
-        autre module n'apparaît pas ici — c'est normal et volontaire, sans effet de bord sur
-        les connexions en cours)."""
-        dll = ctypes.CDLL(dll_path or PicoLogTC08.DLL_PATH)
-        opened = []
-        while True:
-            handle = dll.usb_tc08_open_unit()
-            if handle <= 0:
-                break
-            opened.append(handle)
-
-        serials = []
-        for handle in opened:
-            buffer = ctypes.create_string_buffer(16)
-            status = dll.usb_tc08_get_unit_info2(handle, buffer, 16, ctypes.c_int16(4))
-            serials.append(buffer.value[:status].decode(errors='ignore'))
-        for handle in opened:
-            dll.usb_tc08_close_unit(handle)
-        return serials
 
     def set_mains(self, reject50Hz: bool = True):
         """Sets the mains interference rejection filter to either 50 Hz or 60 Hz. (Default : rejects 50Hz.)"""

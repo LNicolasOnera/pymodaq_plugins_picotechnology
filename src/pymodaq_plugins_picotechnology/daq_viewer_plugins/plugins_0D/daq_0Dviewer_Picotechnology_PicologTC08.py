@@ -33,7 +33,7 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
 
     """
     params = comon_parameters + [
-        {'title': 'Device serial number :', 'name': 'device_serial_number', 'type': 'list'},
+        {'title': 'Device serial number :', 'name': 'device_serial_number', 'type': 'str', 'value': 'A0138/766'},
         {'title': 'TC type :', 'name': 'tc_type', 'type': 'str', 'value': 'K', 'readonly': True},
         {'title': 'Activated Channels', 'name': 'activated_channels', 'type': 'group', 'children': [
             {'title': f'Channel {i} :', 'name': f'channel_{i}', 'type': 'bool'} for i in range(1, 9)
@@ -42,18 +42,7 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
 
     def ini_attributes(self):
         self.controller: PicoLogTC08 = None
-        self.get_connected_serials()
         self.serial = self.settings.child("device_serial_number").value()
-
-    def get_connected_serials(self):
-        param = self.settings.child("device_serial_number")
-        current = param.value()  # sélection actuelle avant reconstruction de la liste
-        serials = PicoLogTC08.enumerate_serial_numbers()
-        limits = serials or ["No device found"]
-        param.setLimits(limits)
-        if current in limits:
-            param.setValue(current)  # restaure le choix si toujours valide
-        self.serial = param.value()
 
     def commit_settings(self, param: Parameter):
         if param.name() == 'device_serial_number':
@@ -63,7 +52,6 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
         info = ""
         if self.is_master:
             try:
-                print(f">>> Tentative d'ouverture avec serial={self.serial}", flush=True)
                 self.controller = PicoLogTC08(self.serial)
                 initialized = True
             except Exception as e:
@@ -72,7 +60,7 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
                 self.emit_status(ThreadCommand('Update_Status', [f"Connexion au PicoLog impossible : {e}"]))
                 self.controller = None
                 initialized = False
-            info = f"PicoLog TC-08 {self.serial}"
+            info = f"PicoLog TC-08 {self.serial} ouvert"
         else:
             self.controller = controller
             initialized = True
