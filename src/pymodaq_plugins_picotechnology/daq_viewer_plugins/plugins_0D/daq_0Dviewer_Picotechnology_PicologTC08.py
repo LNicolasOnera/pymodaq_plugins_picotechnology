@@ -1,5 +1,4 @@
-import os
-import time
+import numpy as np
 
 from pymodaq_utils.utils import ThreadCommand
 from pymodaq_data.data import DataToExport
@@ -37,23 +36,46 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
         {'title': 'Device serial number :', 'name': 'device_serial_number', 'type': 'str', 'value': 'A0138/766'},
         {'title': 'TC type :', 'name': 'tc_type', 'type': 'str', 'value': 'K', 'readonly': True},
         {'title': 'Activated Channels', 'name': 'activated_channels', 'type': 'group', 'children': [
-            {'title': f'Channel {i} :', 'name': f'channel_{i}', 'type': 'bool'} for i in range(1, 9)
+            {'title': f'Channel {i} :', 'name': f'channel_{i}', 'type': 'bool', 'value': False} for i in range(1, 9)
         ]}
     ]
 
     def ini_attributes(self):
         self.controller: PicoLogTC08 = None
         self.serial = self.settings.child("device_serial_number").value()
+        self.tc_type = self.settings.child("tc_type").value()
 
     def commit_settings(self, param: Parameter):
+
         if param.name() == 'device_serial_number':
             self.serial = param.value()
+
+        elif param.name().startswith('channel_'):
+            channel_num = int(param.name().split('_')[1])
+            is_activated = param.value()
+            if self.controller is not None:
+                if is_activated:
+                    # Active le channel avec le type de thermocouple choisi
+                    self.controller.set_channel_specs(channel_num, self.tc_type)
+                else:
+                    # Désactive le channel (type ' ' ou 0 selon l'API)
+                    self.controller.set_channel_specs(channel_num, ' ')
+
+        elif param.name() == 'tc_type': #inutile tant que "tc_type" est en readonly
+            self.tc_type = param.value()
+
 
     def ini_detector(self, controller=None):
         info = ""
         if self.is_master:
             try:
                 self.controller = PicoLogTC08(self.serial)
+                for i in range(1, 9):
+                    if self.settings.child("activated_channels", f"channel_{i}").value():
+                        self.controller.set_channel_specs(i, self.tc_type)
+                    else:
+                        self.controller.set_channel_specs(i, ' ')
+                # self.controller.get_minimum_interval()
                 initialized = True
             except Exception as e:
                 import traceback
@@ -65,6 +87,20 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
         else:
             self.controller = controller
             initialized = True
+
+        # Initialise les viewers avec le bon nombre de traces
+        if initialized:
+            data_init = []
+            labels_init = []
+            for i in range(1, 9):
+                if self.settings.child("activated_channels", f"channel_{i}").value():
+                    data_init.append(np.array([0.0]))
+                    labels_init.append(f"channel_{i} [°C]")
+            self.dte_signal_temp.emit(DataToExport(name='Temperature',
+                                                   data=[DataFromPlugins(name='TC08',
+                                                                         data=data_init,
+                                                                         dim='Data0D',
+                                                                         labels=labels_init)]))
         return info, initialized
 
     def close(self):
@@ -74,13 +110,19 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
             self.controller = None
 
     def grab_data(self, Naverage=1, **kwargs):
-        self.controller.set_channel_specs(1, 'K')
-        self.controller.set_mains()
-        self.controller.get_minimum_interval()
-        data_tot = self.controller.get_single()
+        temp_array = self.controller.get_single()
+        data_tot = []
+        labels = []
+        for i in range(1, 9):
+            if self.settings.child("activated_channels", f"channel_{i}").value():
+                data_tot.append(np.array([temp_array[i]]))  # ← un np.array par channel
+                labels.append(f"channel_{i} [°C]")
+
         self.dte_signal.emit(DataToExport(name='Temperature',
-                                          data=[DataFromPlugins(name='Channel_1', data=data_tot[1],
-                                                                dim='Data0D', labels=['Channel 1 [°C]'])]))
+                                          data=[DataFromPlugins(name='TC08',
+                                                                data=data_tot,
+                                                                dim='Data0D',
+                                                                labels=labels)]))
 
     def stop(self):
         """Stop the current grab hardware wise if necessary"""
