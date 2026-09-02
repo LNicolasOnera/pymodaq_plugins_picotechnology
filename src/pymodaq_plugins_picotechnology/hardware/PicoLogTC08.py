@@ -14,201 +14,175 @@ logger = logging.getLogger(__name__)
 class PicoLogTC08:
     """Class for communicating with a PicoLog TC-08 connected to a USB port of the computer."""
 
-    # The path below should be adapted for your computer.
     DLL_PATH = r"C:\Program Files\Pico Technology\SDK\lib\usbtc08.dll"
 
-    _open_handles = {}
-    @classmethod
-    def close_all_stray_handles(cls, tc08dll=None):
-        """Ferme tout handle connu du process, peu importe quelle instance l'a ouvert.
-        À appeler avant toute nouvelle tentative de connexion pour repartir propre."""
-        for serial, (handle, dll) in list(cls._open_handles.items()):
-            try:
-                (dll or tc08dll).usb_tc08_close_unit(handle)
-                logger.info(f"Handle orphelin fermé pour {serial}")
-            except Exception as e:
-                logger.info(f"Echec fermeture handle orphelin pour {serial}")
-            finally:
-                cls._open_handles.pop(serial, None)
+    # Un handle actif par serial (pas un slot global) : nécessaire car PyMoDAQ n'appelle
+    # pas toujours close() de façon fiable à la déconnexion, et parce que plusieurs
+    # PicoLog peuvent être connectés/utilisés en parallèle par des modules différents.
+    _open_handles = {}  # {serial_number: (handle, tc08dll)}
 
-    def __init__(self, serial_number: str = None, handle: int = None, tc08dll=None):
-        """
-        serial_number : numéro de série de l'unité à utiliser (optionnel).
-        handle, tc08dll : si les deux sont fournis, on suppose que ce handle a déjà été ouvert
-            (typiquement via PicoLogTC08.discover_units(close_after=False)) et on l'utilise
-            directement, sans repasser par une phase de découverte complète.
-        """
-        self.tc08dll = tc08dll or ctypes.CDLL(self.DLL_PATH)
-
-        # Those values can be changed or adapted if required.
+    def __init__(self, serial_number: str):
+        self.tc08dll = ctypes.CDLL(self.DLL_PATH)
         self.buffer_length = 64
         self.string_length = 16
         self.format_string_length = 256
-        self.units = ctypes.c_int16(0)  # Units value (0: °C, 1: °F, 2: K, 3: Rankine)
-        self.dictionary_of_detected_units = {}
-
-        # Nettoyage avant toute nouvelle ouverture
-        PicoLogTC08.close_all_stray_handles(self.tc08dll)
-
-        if handle is not None:
-            # Handle déjà ouvert et déjà identifié : réutilisé tel quel, sans nouvelle énumération.
-            self.handle = handle
-            if serial_number:
-                self.dictionary_of_detected_units = {serial_number: handle}
-            print(f"Réutilisation du handle déjà ouvert ({serial_number}).")
-            return
-
-        self.get_dictionary_of_detected_units()  # Make sure to call close_all_units() at the end of your program!
-        if serial_number:
-            if serial_number in self.dictionary_of_detected_units:
-                self.handle = self.dictionary_of_detected_units[serial_number]
-                print(f"Ouverture {serial_number}")
-            else:
-                raise ConnectionError(f"Serial number {serial_number} not found in detected units.")
-        else:
-            if self.dictionary_of_detected_units:
-                for unit in self.dictionary_of_detected_units:
-                    self.handle = self.dictionary_of_detected_units[unit]
-                    print(f"Ouverture {unit}")
-                    break
-            else:
-                raise ConnectionError("No unit found, check connection and driver installation.")
+        self.units = ctypes.c_int16(0)  # 0: °C, 1: °F, 2: K, 3: Rankine
+        self.handle = None
+        self.open_unit_by_serial(serial_number)
 
     @classmethod
-    def discover_units(cls, tc08dll=None, close_after: bool = True, retries: int = 5, delay: float = 0.5) -> dict:
-        """Énumère les unités disponibles et renvoie {serial_number: handle}.
+    def _force_close_stray(cls, serial_number, dll=None):
+        """Referme un handle resté enregistré pour CE serial précis (session précédente
+        abandonnée par PyMoDAQ sans close()), sans toucher aux autres devices."""
+        if serial_number in cls._open_handles:
+            handle, prev_dll = cls._open_handles.pop(serial_number)
+            try:
+                (dll or prev_dll).usb_tc08_close_unit(handle)
+                print(f"Handle précédent ({handle}) pour {serial_number} fermé de force.", flush=True)
+            except Exception as e:
+                print(f"Échec fermeture handle précédent pour {serial_number} : {e}", flush=True)
 
-        close_after=True (par défaut) : referme chaque handle juste après lecture du numéro de
-            série -> pour un simple listing (menu déroulant).
-        close_after=False : laisse les handles ouverts et les renvoie, pour qu'ils soient
-            réutilisables directement -> évite une seconde phase d'ouverture complète juste après.
-        retries/delay : certains drivers usbtc08 ont besoin d'un court délai après la fermeture
-            d'un handle avant qu'une nouvelle énumération ne retrouve l'unité. On retente donc
-            plusieurs fois avant de conclure qu'aucune unité n'est disponible.
-        """
-        import time
-        dll = tc08dll or ctypes.CDLL(cls.DLL_PATH)
-        cls.close_all_stray_handles(dll)
+    def read_serial(self, handle: int) -> str:
+        """Reads the serial number from an open handle."""
+        buffer = ctypes.create_string_buffer(self.string_length)
+        status = self.tc08dll.usb_tc08_get_unit_info2(handle, buffer, self.string_length, ctypes.c_int16(4))
+        return buffer.value[:status].decode(errors='ignore')
 
-        for attempt in range(retries):
-            found = {}
-            while True:
-                handle = dll.usb_tc08_open_unit()
-                if handle <= 0:
-                    break
-                string_obj = ctypes.c_int8 * 16
-                string = string_obj()
-                status = dll.usb_tc08_get_unit_info2(handle, string, 16, ctypes.c_int16(4))
-                if status == 0:
-                    dll.usb_tc08_close_unit(handle)
-                    break
-                serial_number = bytes(string[:status]).decode()
-                found[serial_number] = handle
-                if close_after:
-                    dll.usb_tc08_close_unit(handle)
+    def open_unit_by_serial(self, serial_number: str):
+        if not serial_number:
+            raise ConnectionError("No serial number provided.")
 
-            if found:
-                logger.info(f"[{time.strftime('%H:%M:%S')}] Dictionary of detected units : {found}")
-                return found
+        PicoLogTC08._force_close_stray(serial_number, self.tc08dll)
 
-            if attempt < retries - 1:
-                time.sleep(delay)
-        logger.info(f"[{time.strftime('%H:%M:%S')}] No unit detected")
-        return {}
+        opened = []
+        found_handle = None
+        while True:
+            handle = self.tc08dll.usb_tc08_open_unit()
+            if handle <= 0:
+                break
+            opened.append(handle)
+            try:
+                detected = self.read_serial(handle)
+            except Exception:
+                for h in opened:
+                    self.tc08dll.usb_tc08_close_unit(h)
+                raise
+            if detected == serial_number:
+                found_handle = handle
+                break
 
-    def open_unit(self) -> int:
-        """Opens the USB TC-08 unit and gets a valid USB handle. Creates attribute self.handle"""
-        self.handle = self.tc08dll.usb_tc08_open_unit()
-        if self.handle == -1:
-            self.get_last_error()
-            raise ConnectionError("Error opening a unit.")
-        elif self.handle == 0 :
-            raise ConnectionError("No more unit found.")
-        else:
-            return self.handle
-    
-    def close_unit(self, handle : int = None):
+        # Referme tout ce qui a été ouvert pendant la recherche, sauf le handle retenu
+        for h in opened:
+            if h != found_handle:
+                self.tc08dll.usb_tc08_close_unit(h)
+
+        if found_handle is None:
+            raise ConnectionError(f"Serial number {serial_number} not found among connected units.")
+
+        self.handle = found_handle
+        PicoLogTC08._open_handles[serial_number] = (found_handle, self.tc08dll)
+        print(f"Ouverture {serial_number}")
+        return found_handle
+
+    def close_unit(self, handle: int = None):
         """Closes the handle. Note that if no handle is specified, it tries to close the unit with the self.handle attribute"""
-        print("close")
-        if not handle :
+        if not handle:
             handle = self.handle
         status = self.tc08dll.usb_tc08_close_unit(handle)
+        for serial, (h, _) in list(PicoLogTC08._open_handles.items()):
+            if h == handle:
+                PicoLogTC08._open_handles.pop(serial, None)
+        if status == 0:
+            raise ConnectionError(f"Error closing the unit linked to the handle {handle}.")
+        elif status != 1:
+            raise ValueError(f"Closing unit status not listed : {status}.")
+
+    def set_mains(self, reject50Hz: bool = True):
+        """Sets the mains interference rejection filter to either 50 Hz or 60 Hz. (Default : rejects 50Hz.)"""
+        rejection_value = 1 if not reject50Hz else 0
+        status = self.tc08dll.usb_tc08_set_mains(self.handle, rejection_value)
+        if status == 0:
+            raise ValueError("An error occurred while setting the filter value.")
+        elif status != 1:
+            raise ValueError(f"Filter settings status not listed : {status}.")
+
+    def get_minimum_interval(self) -> int:
+        """Returns the minimum sampling interval for the current setup."""
+        interval = self.tc08dll.usb_tc08_get_minimum_interval_ms(self.handle)
+        if interval == 0:
+            raise ValueError("An error occurred while getting the minimum sampling interval.")
+        return interval
+
+    def set_channel_specs(self, channel: int, tc_type: str):
+        """Sets up a USB TC-08 channel."""
+        if not (isinstance(channel, int) and 0 <= channel <= 8):
+            raise ValueError(f"Entered channel do not exist; should be an integer between 0 and 8, value entered : {channel}.")
+        if tc_type not in ['B', 'E', 'J', 'K', 'N', 'R', 'S', 'T', ' ', 'X']:
+            raise ValueError(f"Thermocouple entered type is not supported : {tc_type}.")
+        status = self.tc08dll.usb_tc08_set_channel(self.handle, ctypes.c_int16(channel),
+                                                     ctypes.c_char(bytes(tc_type, encoding='utf-8')))
+        if status == 0:
+            raise ConnectionError("An error occurred while setting the channel.")
+        elif status != 1:
+            raise ValueError(f"Channel status not listed : {status}.")
+
+    def get_single(self):
+        """Converts readings from currently set up channels on demand."""
+        temp_array = (ctypes.c_float * 9)()
+        overflow = ctypes.c_int16()
+        status = self.tc08dll.usb_tc08_get_single(self.handle, temp_array, overflow, self.units)
+        if status == 0:
+            raise ConnectionError("An error occurred while getting a single reading.")
+        elif status != 1:
+            raise ValueError(f"Single reading status not listed : {status}.")
+        return temp_array[:]
+    
+    def get_temp(self, channel : int) -> tuple:
+        """In streaming mode, retrieves temperature readings from a specified channel."""
+        if not (type(channel) == int)&(0 <= channel <= 8):
+            raise ValueError(f"Entered channel do not exist; should be an integer between 0 and 8, value entered : {channel}.")
+        temp_buffer_obj = ctypes.c_float * (9 * self.buffer_length)
+        temp_buffer = temp_buffer_obj()
+        times_buffer = ctypes.c_int32()
+        overflow = ctypes.c_int16()
+        selected_channel = ctypes.c_int16(channel)
+        # fill_missing value can be set to 0 : 0Nan or 1 : replace the missing value with the last known one.
+        fill_missing = ctypes.c_int16(0)
+        status = self.tc08dll.usb_tc08_get_temp(self.handle, temp_buffer, times_buffer, self.buffer_length,
+                                                overflow, selected_channel, self.units, fill_missing)
+        if status == -1:
+            self.get_last_error()
+            raise ConnectionError("An error occurred while reading the temperature buffer in streaming mode.")
+        elif status == 0:
+            raise ValueError("No data available in the buffer.")
+        else:
+            # print(f"There are {status} values in the buffer.")
+            return status, temp_buffer[:]
+
+    def run_streaming(self, interval : int):
+        """Starts the USB TC-08 unit streaming."""
+        # Note : if the time interval passed in argument is shorter than the minimum one (for the configuration),
+        # the PicoLog TC08 will use the latest to avoid errors.
+        selected_interval = ctypes.c_int16(interval)
+        status = self.tc08dll.usb_tc08_run(self.handle, selected_interval)
         if status == 0:
             self.get_last_error()
-            raise ConnectionError(f"Error closing the unit linked to the handle {handle}.")
-        elif status == 1:
-#            print("Unit closed.")
-            pass
+            raise ConnectionError("An error occured while running the unit streaming.")
         else:
-            raise ValueError(f"Closing unit status not listed : {status}.")
-            
+            print(f"Time interval between two samples : {status} ms.")
+
     def stop_streaming(self):
         """Stops the unit streaming."""
         status = self.tc08dll.usb_tc08_stop(self.handle)
         if status == 0:
             raise ValueError("Invalid parameter.")
         elif status == 1:
-#            print("Streaming stopped.")
+            #            print("Streaming stopped.")
             pass
         else:
             raise ValueError(f"Stop streaming status not listed : {status}.")
-    
-    def set_mains(self, reject50Hz : bool = True):
-        """Sets the mains interference rejection filter to either 50 Hz or 60 Hz. (Default : rejects 50Hz.)"""
-        if not reject50Hz :
-            rejection_value = 1
-        else:
-            rejection_value = 0
-        status = self.tc08dll.usb_tc08_set_mains(self.handle, rejection_value)
-        if status == 0:
-            self.get_last_error()
-            raise ValueError("An error occurred while setting the filter value.")
-        elif status == 1:
-#            print("Filter has been set up as defined.")
-            pass
-        else:
-            raise ValueError(f"Filter settings status not listed : {status}.")
-            
-    def get_minimum_interval(self) -> str:
-        """Returns the minimum sampling interval for the current setup."""
-        interval = self.tc08dll.usb_tc08_get_minimum_interval_ms(self.handle)
-        if interval == 0:
-            self.get_last_error()
-            raise ValueError("An error occurred while getting the minimum sampling interval.")
-        else:
-            print(f"Minimum time interval : {interval} ms.")
-            return interval
 
-    def get_dictionary_of_detected_units(self, retries: int = 5, delay: float = 0.5):
-        """Opens every unit available and link their serial number to their handle.
-        Creates self.dictionary_of_detected_units but need to call close_all_units at the end of your program."""
-        logger.info(f"[{time.strftime('%H:%M:%S')}] début découverte")
-        for attempt in range(retries):
-            self.dictionary_of_detected_units = {}
-            while True:
-                try:
-                    handle = self.open_unit()
-                    serial_number = self.get_unit_info()
-                    self.dictionary_of_detected_units[serial_number] = handle
-                except Exception:
-                    break
-            if self.dictionary_of_detected_units:
-                logger.info(f"[{time.strftime('%H:%M:%S')}] Dictionary of detected units : {self.dictionary_of_detected_units}")
-                return
-            if attempt < retries - 1:
-                time.sleep(delay)
-        logger.info(f"[{time.strftime('%H:%M:%S')}] No unit detected")
-
-    def close_all_units(self):
-        """Closes all units opened with get_dictionary_of_detected_units method."""
-        if self.dictionary_of_detected_units:
-            for unit in self.dictionary_of_detected_units:
-                handle = self.dictionary_of_detected_units[unit]
-                self.close_unit(handle)
-        else :
-            print("No unit found in self.dictionary_of_detected_units.")
-
-    def get_unit_info(self, line_number : int = 4):
+    def get_unit_info(self, line_number: int = 4):
         """Retrieves specific information on a unit and presents it as a string."""
         string_obj = ctypes.c_int8 * self.string_length
         string = string_obj()
@@ -219,15 +193,16 @@ class PicoLogTC08:
         if status == 0:
             self.get_last_error()
             raise ValueError("An error occurred while getting the unit information.")
-        else :
+        else:
             # print(f"Unit info : {bytes(string[:status]).decode()}.")
             return bytes(string[:status]).decode()
-    
+
     def get_formatted_info(self) -> str:
         """Retrieves information on a particular unit and presents it in string form."""
         unit_format_info_obj = ctypes.c_int8 * self.format_string_length
         unit_format_info = unit_format_info_obj()
-        status = self.tc08dll.usb_tc08_get_formatted_info(self.handle, unit_format_info, self.format_string_length)
+        status = self.tc08dll.usb_tc08_get_formatted_info(self.handle, unit_format_info,
+                                                          self.format_string_length)
         if status == 0:
             print("Too many bytes to copy, change self.format_string_length to a higher value.")
         elif status == 1:
@@ -235,12 +210,12 @@ class PicoLogTC08:
         else:
             raise ValueError(f"Formated information status not listed : {status}.")
         return bytes(unit_format_info).decode()
-    
+
     def get_last_error(self):
         """Returns the last error for a specified unit or for a call to open a unit."""
         error_code = self.tc08dll.usb_tc08_get_last_error(self.handle)
         if error_code == 0:
-#            print("No error occurred.")
+            #            print("No error occurred.")
             pass
         elif error_code == 1:
             raise ConnectionError("The driver does not support the current operating system.")
@@ -276,74 +251,6 @@ class PicoLogTC08:
             raise ConnectionError("The PC has lost communication with the device.")
         else:
             raise ValueError(f"Error code not listed : {error_code}.")
-            
-    def set_channel_specs(self, channel : int, tc_type : str):
-        """Sets up a USB TC-08 channel."""
-        if not (type(channel) == int)&(0 <= channel <= 8):
-            raise ValueError(f"Entered channel do not exist; should be an integer between 0 and 8, value entered : {channel}.")
-        if not tc_type in ['B', 'E', 'J', 'K', 'N', 'R', 'S', 'T', ' ', 'X']:
-            raise ValueError(f"Thermocouple entered type is not supported : {tc_type}.")
-        selected_channel = ctypes.c_int16(channel)
-        tc = ctypes.c_char(bytes(tc_type, encoding = 'utf-8'))
-        status = self.tc08dll.usb_tc08_set_channel(self.handle, selected_channel, tc)
-        if status == 0:
-            self.get_last_error()
-            raise ConnectionError("An error occurred while setting the channel.")
-        elif status == 1:
-#            print(f"Channel {channel} has been set up.")
-            pass
-        else:
-            raise ValueError(f"Channel status not listed : {status}.")
-            
-    def run_streaming(self, interval : int):
-        """Starts the USB TC-08 unit streaming."""
-        # Note : if the time interval passed in argument is shorter than the minimum one (for the configuration),
-        # the PicoLog TC08 will use the latest to avoid errors.
-        selected_interval = ctypes.c_int16(interval)
-        status = self.tc08dll.usb_tc08_run(self.handle, selected_interval)
-        if status == 0:
-            self.get_last_error()
-            raise ConnectionError("An error occured while running the unit streaming.")
-        else:
-            print(f"Time interval between two samples : {status} ms.")
-            
-    def get_single(self):
-        """Converts readings from currently set up channels on demand."""
-        temp_array_obj = ctypes.c_float * 9
-        temp_array = temp_array_obj()
-        overflow = ctypes.c_int16()
-        status = self.tc08dll.usb_tc08_get_single(self.handle, temp_array, overflow, self.units)
-        if status == 0:
-            self.get_last_error()
-            raise ConnectionError("An error occurred while getting a single reading.")
-        elif status == 1:
-#            print("Single reading taken.")
-            pass
-        else:   
-            raise ValueError(f"Single reading status not listed : {status}.")
-        return temp_array[:]
-    
-    def get_temp(self, channel : int) -> tuple:
-        """In streaming mode, retrieves temperature readings from a specified channel."""
-        if not (type(channel) == int)&(0 <= channel <= 8):
-            raise ValueError(f"Entered channel do not exist; should be an integer between 0 and 8, value entered : {channel}.")
-        temp_buffer_obj = ctypes.c_float * (9 * self.buffer_length)
-        temp_buffer = temp_buffer_obj()
-        times_buffer = ctypes.c_int32()
-        overflow = ctypes.c_int16()
-        selected_channel = ctypes.c_int16(channel)
-        # fill_missing value can be set to 0 : 0Nan or 1 : replace the missing value with the last known one.
-        fill_missing = ctypes.c_int16(0)
-        status = self.tc08dll.usb_tc08_get_temp(self.handle, temp_buffer, times_buffer, self.buffer_length,
-                                                overflow, selected_channel, self.units, fill_missing)
-        if status == -1:
-            self.get_last_error()
-            raise ConnectionError("An error occurred while reading the temperature buffer in streaming mode.")
-        elif status == 0:
-            raise ValueError("No data available in the buffer.")
-        else:
-            # print(f"There are {status} values in the buffer.")
-            return status, temp_buffer[:]
 
     
 # ------------------------------------------------- 
