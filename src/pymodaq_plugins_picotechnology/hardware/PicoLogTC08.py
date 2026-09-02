@@ -5,19 +5,11 @@ Created on Thu Jul 17 16:24:12 2025
 @author: bpons
 """
 
-# TO DO ONCE WITH A NEW COMPUTER :
-# This program do not need anything to run except PicoSDK to download from PicoTech official website.
-# See : https://www.picotech.com/downloads and then go to PicoLog Data Loggers/TC-08/Software.
-# The downloaded file has to be run with administrators access, and it works perfectly with the default configuration.
-# When it is done, find the path to "usbtc08.dll" in your computer and copy/paste it to replace mine in the __init__
-# section below from PicoLogTC08 class. Your path should be very similar to mine.
-# When this has been done for your computer everything should run perfectly !
-
-# Note : A python wrapper was also made by PicoTech, see my tutorial to install their packages and use it if you prefer.
-# See : https://github.com/picotech/picosdk-python-wrappers/tree/master/usbtc08Examples and my documentation word file.
-
 import ctypes
 import time
+
+import logging
+logger = logging.getLogger(__name__)
 
 class PicoLogTC08:
     """Class for communicating with a PicoLog TC-08 connected to a USB port of the computer."""
