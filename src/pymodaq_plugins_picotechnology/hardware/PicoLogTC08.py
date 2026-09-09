@@ -42,6 +42,27 @@ class PicoLogTC08:
             except Exception as e:
                 print(f"Échec fermeture handle précédent pour {serial_number} : {e}", flush=True)
 
+    @classmethod
+    def list_available_serials(cls) -> list:
+        """Énumère les numéros de série de tous les PicoLog TC-08 actuellement détectables
+        (les unités déjà ouvertes par ce process, via _open_handles, ne réapparaîtront pas
+        tant qu'elles ne sont pas refermées — même limitation connue que dans open_unit_by_serial)."""
+        dll = ctypes.CDLL(cls.DLL_PATH)
+        string_length = 16
+        serials = []
+        opened = []
+        while True:
+            handle = dll.usb_tc08_open_unit()
+            if handle <= 0:
+                break
+            opened.append(handle)
+            buffer = ctypes.create_string_buffer(string_length)
+            status = dll.usb_tc08_get_unit_info2(handle, buffer, string_length, ctypes.c_int16(4))
+            serials.append(buffer.value[:status].decode(errors='ignore'))
+        for h in opened:
+            dll.usb_tc08_close_unit(h)
+        return serials
+
     def read_serial(self, handle: int) -> str:
         """Reads the serial number from an open handle."""
         buffer = ctypes.create_string_buffer(self.string_length)

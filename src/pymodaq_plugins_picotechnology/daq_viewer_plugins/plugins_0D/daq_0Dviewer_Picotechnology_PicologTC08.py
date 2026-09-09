@@ -33,7 +33,8 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
 
     """
     params = comon_parameters + [
-        {'title': 'Device serial number :', 'name': 'device_serial_number', 'type': 'str', 'value': 'A0138/766'},
+        {'title': 'Device serial number :', 'name': 'device_serial_number', 'type': 'list', 'limits': [], 'value': ''},
+        {'title': 'Refresh devices', 'name': 'refresh_devices', 'type': 'bool_push', 'value': False},
         {'title': 'TC type :', 'name': 'tc_type', 'type': 'str', 'value': 'K', 'readonly': True},
         {'title': 'Activated Channels', 'name': 'activated_channels', 'type': 'group', 'children': [
             {'title': f'Channel {i} :', 'name': f'channel_{i}', 'type': 'bool', 'value': False} for i in range(1, 9)
@@ -42,11 +43,30 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
 
     def ini_attributes(self):
         self.controller: PicoLogTC08 = None
-        self.serial = self.settings.child("device_serial_number").value()
         self.tc_type = self.settings.child("tc_type").value()
+        self._refresh_serial_list()
+
+    def _refresh_serial_list(self):
+        try:
+            available = PicoLogTC08.list_available_serials()
+            print(f"Serials détectés : {available}", flush=True)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            available = []
+            self.emit_status(ThreadCommand('Update_Status', [f"Erreur énumération PicoLog : {e}"]))
+
+        self.settings.child("device_serial_number").setLimits(available)  # <- setLimits, pas set_limits
+        current = self.settings.child("device_serial_number").value()
+        if available and current not in available:
+            self.settings.child("device_serial_number").setValue(available[0])
+        self.serial = self.settings.child("device_serial_number").value()
 
     def commit_settings(self, param: Parameter):
-        if param.name() == 'device_serial_number':
+        if param.name() == 'refresh_devices':
+            self._refresh_serial_list()
+
+        elif param.name() == 'device_serial_number':
             self.serial = param.value()
 
         elif param.name().startswith('channel_'):
