@@ -33,7 +33,7 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
 
     """
     params = comon_parameters + [
-        {'title': 'Device serial number :', 'name': 'device_serial_number', 'type': 'str', 'value': 'A0138/766'},
+        {'title': 'Device serial number :', 'name': 'device_serial_number', 'type': 'str'},
         {'title': 'TC type :', 'name': 'tc_type', 'type': 'str', 'value': 'K', 'readonly': True},
         {'title': 'Activated Channels', 'name': 'activated_channels', 'type': 'group', 'children': [
             {'title': f'Channel {i} :', 'name': f'channel_{i}', 'type': 'bool', 'value': False} for i in range(1, 9)
@@ -67,7 +67,11 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
         info = ""
         if self.is_master:
             try:
-                self.controller = PicoLogTC08(self.serial)
+                serial = self.settings.child("device_serial_number").value().strip()
+                self.controller = PicoLogTC08(serial if serial else None)
+                # renseigne le champ avec le serial réellement connecté, utile en mode auto
+                self.settings.child("device_serial_number").setValue(self.controller.serial_number)
+                self.serial = self.controller.serial_number
                 for i in range(1, 9):
                     if self.settings.child("activated_channels", f"channel_{i}").value():
                         self.controller.set_channel_specs(i, self.tc_type)

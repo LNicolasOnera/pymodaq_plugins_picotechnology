@@ -28,7 +28,11 @@ class PicoLogTC08:
         self.format_string_length = 256
         self.units = ctypes.c_int16(0)  # 0: °C, 1: °F, 2: K, 3: Rankine
         self.handle = None
-        self.open_unit_by_serial(serial_number)
+        self.serial_number = None
+        if serial_number:
+            self.open_unit_by_serial(serial_number)
+        else:
+            self.open_first_available_unit()
 
     @classmethod
     def _force_close_stray(cls, serial_number, dll=None):
@@ -48,12 +52,25 @@ class PicoLogTC08:
         status = self.tc08dll.usb_tc08_get_unit_info2(handle, buffer, self.string_length, ctypes.c_int16(4))
         return buffer.value[:status].decode(errors='ignore')
 
+    def open_first_available_unit(self):
+        """Ouvre le premier device libre trouvé par le driver, sans connaître son serial à l'avance."""
+        handle = self.tc08dll.usb_tc08_open_unit()
+        if handle <= 0:
+            raise ConnectionError(
+                "Aucun PicoLog TC-08 disponible (aucun appareil branché, ou déjà ouvert "
+                "par une session précédente mal refermée — reconnecte-toi alors avec son "
+                "numéro de série exact pour forcer la libération)."
+            )
+        self.handle = handle
+        self.serial_number = self.read_serial(handle)
+        PicoLogTC08._open_handles[self.serial_number] = (handle, self.tc08dll)
+        print(f"Ouverture automatique : {self.serial_number}", flush=True)
+        return self.serial_number
+
     def open_unit_by_serial(self, serial_number: str):
         if not serial_number:
             raise ConnectionError("No serial number provided.")
-
         PicoLogTC08._force_close_stray(serial_number, self.tc08dll)
-
         opened = []
         found_handle = None
         while True:
@@ -70,16 +87,13 @@ class PicoLogTC08:
             if detected == serial_number:
                 found_handle = handle
                 break
-
-        # Referme tout ce qui a été ouvert pendant la recherche, sauf le handle retenu
         for h in opened:
             if h != found_handle:
                 self.tc08dll.usb_tc08_close_unit(h)
-
         if found_handle is None:
             raise ConnectionError(f"Serial number {serial_number} not found among connected units.")
-
         self.handle = found_handle
+        self.serial_number = serial_number
         PicoLogTC08._open_handles[serial_number] = (found_handle, self.tc08dll)
         print(f"Ouverture {serial_number}")
         return found_handle
@@ -251,107 +265,3 @@ class PicoLogTC08:
             raise ConnectionError("The PC has lost communication with the device.")
         else:
             raise ValueError(f"Error code not listed : {error_code}.")
-
-    
-# ------------------------------------------------- 
-# The following functions are examples of what can be done and how to use the methods created above.
-# -------------------------------------------------
-
-
-def single_data_reading_example() -> list:
-    """Example of connection to a PicoLog device to make a single temperature reading."""
-    try :
-        # If you know the serial number of your device, you can call :
-        # PicoLogA = PicoLogTC08('AO024/303')
-        # If you just want to connect to a device, or list the available ones, call :
-        PicoLogA = PicoLogTC08()
-        # Note that you are connected to the first device from the dictionary.
-        PicoLogA.get_formatted_info()
-
-        # Setting up the channels for data reading.
-        # Note that 'X' returns the voltage read by the thermocouple and ' ' ignores the channel (it's easier not to set
-        # it up in that case). Channel 0 is the cold-junction.
-        PicoLogA.set_channel_specs(1, 'K')
-        PicoLogA.set_channel_specs(2, 'K')
-        PicoLogA.set_channel_specs(3, ' ')
-        PicoLogA.set_channel_specs(5, 'K')
-        PicoLogA.set_mains()
-        PicoLogA.get_minimum_interval()
-        collected_temp_data = PicoLogA.get_single()
-    except Exception as e:
-        print(f"Unexpected error : {e}")
-    finally :
-        PicoLogA.close_all_units()
-        return [time.strftime("%Y-%m-%d", time.localtime()), time.strftime("%H:%M:%S", time.localtime())] + collected_temp_data
-
-#print(single_data_reading_example())
-
-
-def grab_data_finite_loop_example(channel : int, type_tc : str, interval_pico_log : int,
-                                  interval_reading_buffer : int, reading_number : int) -> list:
-    """Example of connection to a PicoLog device to grab some data in streaming mode.
-    ===============================
-    channel : int (channel where the data will be collected)
-    type_tc : str (thermocouple type of the channel)
-    interval_pico_log : int (time interval in ms at which the PicoLog will send data to a buffer)
-    interval_reading_buffer : int (time interval in seconds at which the computer will read the buffer, must be greater or
-    at least equal to interval_pico_log)
-    reading_number : int (number of readings of the buffer)"""
-    try :
-        PicoLogA = PicoLogTC08()
-        PicoLogA.set_channel_specs(channel, type_tc)
-        PicoLogA.set_mains()
-        PicoLogA.get_minimum_interval()
-        PicoLogA.run_streaming(interval_pico_log)
-        print(time.strftime("%Y-%m-%d", time.localtime()) +' ' + time.strftime("%H:%M:%S", time.localtime()) + " : Streaming starts.")
-        list_of_grabbed_data = []
-        for i in range(0, reading_number):
-            print(f"Reading number {i}")
-            time.sleep(interval_reading_buffer)
-            number_of_values_in_buffer, collected_temp_data = PicoLogA.get_temp(channel)
-            print(collected_temp_data[:number_of_values_in_buffer])
-            list_of_grabbed_data += collected_temp_data[:number_of_values_in_buffer]
-    except Exception as e:
-        print(f"Unexpected error : {e}")
-    finally :
-       print(time.strftime("%Y-%m-%d", time.localtime()) +' ' + time.strftime("%H:%M:%S", time.localtime()) + " : Streaming ends.")
-       PicoLogA.stop_streaming()
-       PicoLogA.close_all_units()
-       return list_of_grabbed_data
-
-# grab_data_finite_loop_example(1, 'K', 100, 5, 5)
-
-def grab_data_infinite_loop_example(channel : int, type_tc : str, interval_pico_log : int,
-                                    interval_reading_buffer: int) -> list:
-    """Example of user-interrupted streaming mode from a PicoLog device.
-    =====================================
-    channel : int (channel where the data will be collected)
-    type_tc : str (thermocouple type of the channel)
-    interval_pico_log : int (time interval in ms at which the PicoLog will send data to a buffer)
-    interval_reading_buffer : int (time interval in seconds at which the computer will read the buffer, must be greater or
-    at least equal to interval_pico_log)"""
-    try :
-        PicoLogA = PicoLogTC08()
-        PicoLogA.set_channel_specs(channel, type_tc)
-        PicoLogA.set_mains()
-        PicoLogA.get_minimum_interval()
-        PicoLogA.run_streaming(interval_pico_log)
-        print(time.strftime("%Y-%m-%d", time.localtime()) +' ' + time.strftime("%H:%M:%S", time.localtime()) + " : Streaming starts.")
-        list_of_grabbed_data = []
-        while True:
-            time.sleep(interval_reading_buffer)
-            number_of_values_in_buffer, collected_temp_data = PicoLogA.get_temp(channel)
-            print(collected_temp_data[:number_of_values_in_buffer])
-            list_of_grabbed_data += collected_temp_data[:number_of_values_in_buffer]
-    except Exception as e:
-        print(f"Unexpected error : {e}")
-    except KeyboardInterrupt :
-        print("Streaming stopped by the user.")
-    finally :
-       print(time.strftime("%Y-%m-%d", time.localtime()) +' ' + time.strftime("%H:%M:%S", time.localtime()) + " : Streaming ends.")
-       PicoLogA.stop_streaming()
-       PicoLogA.close_all_units()
-       return list_of_grabbed_data
-   
-# grab_data_infinite_loop_example(4, 'K', 1000, 1)
-
