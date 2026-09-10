@@ -56,11 +56,7 @@ class PicoLogTC08:
         """Ouvre le premier device libre trouvé par le driver, sans connaître son serial à l'avance."""
         handle = self.tc08dll.usb_tc08_open_unit()
         if handle <= 0:
-            raise ConnectionError(
-                "Aucun PicoLog TC-08 disponible (aucun appareil branché, ou déjà ouvert "
-                "par une session précédente mal refermée — reconnecte-toi alors avec son "
-                "numéro de série exact pour forcer la libération)."
-            )
+            raise ConnectionError("Aucun PicoLog TC-08 disponible")
         self.handle = handle
         self.serial_number = self.read_serial(handle)
         PicoLogTC08._open_handles[self.serial_number] = (handle, self.tc08dll)
@@ -172,29 +168,6 @@ class PicoLogTC08:
         else:
             # print(f"There are {status} values in the buffer.")
             return status, temp_buffer[:]
-
-    def run_streaming(self, interval : int):
-        """Starts the USB TC-08 unit streaming."""
-        # Note : if the time interval passed in argument is shorter than the minimum one (for the configuration),
-        # the PicoLog TC08 will use the latest to avoid errors.
-        selected_interval = ctypes.c_int16(interval)
-        status = self.tc08dll.usb_tc08_run(self.handle, selected_interval)
-        if status == 0:
-            self.get_last_error()
-            raise ConnectionError("An error occured while running the unit streaming.")
-        else:
-            print(f"Time interval between two samples : {status} ms.")
-
-    def stop_streaming(self):
-        """Stops the unit streaming."""
-        status = self.tc08dll.usb_tc08_stop(self.handle)
-        if status == 0:
-            raise ValueError("Invalid parameter.")
-        elif status == 1:
-            #            print("Streaming stopped.")
-            pass
-        else:
-            raise ValueError(f"Stop streaming status not listed : {status}.")
 
     def get_unit_info(self, line_number: int = 4):
         """Retrieves specific information on a unit and presents it as a string."""

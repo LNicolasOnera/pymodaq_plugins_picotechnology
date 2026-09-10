@@ -78,14 +78,16 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
                         self.controller.set_channel_specs(i, self.tc_type)
                     else:
                         self.controller.set_channel_specs(i, ' ')
+                self.controller.set_mains()
                 initialized = True
+                info = f"PicoLog TC-08 {self.serial} ouvert"
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 self.emit_status(ThreadCommand('Update_Status', [f"Connexion au PicoLog impossible : {e}"]))
                 self.controller = None
                 initialized = False
-            info = f"PicoLog TC-08 {self.serial} ouvert"
+                info = f"Connexion au PicoLog impossible : {e}"
         else:
             self.controller = controller
             initialized = True
