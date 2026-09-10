@@ -33,7 +33,7 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
 
     """
     params = comon_parameters + [
-        {'title': 'Device serial number :', 'name': 'device_serial_number', 'type': 'str', 'value': 'A0138/766'},
+        {'title': 'Device serial number :', 'name': 'device_serial_number', 'type': 'str'},
         {'title': 'TC type :', 'name': 'tc_type', 'type': 'str', 'value': 'K', 'readonly': True},
         {'title': 'Activated Channels', 'name': 'activated_channels', 'type': 'group', 'children': [
             {'title': f'Channel {i} :', 'name': f'channel_{i}', 'type': 'bool', 'value': False} for i in range(1, 9)
@@ -64,18 +64,20 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
         elif param.name() == 'tc_type': #inutile tant que "tc_type" est en readonly
             self.tc_type = param.value()
 
-
     def ini_detector(self, controller=None):
         info = ""
         if self.is_master:
             try:
-                self.controller = PicoLogTC08(self.serial)
+                serial = self.settings.child("device_serial_number").value().strip()
+                self.controller = PicoLogTC08(serial if serial else None)
+                # renseigne le champ avec le serial réellement connecté, utile en mode auto
+                self.settings.child("device_serial_number").setValue(self.controller.serial_number)
+                self.serial = self.controller.serial_number
                 for i in range(1, 9):
                     if self.settings.child("activated_channels", f"channel_{i}").value():
                         self.controller.set_channel_specs(i, self.tc_type)
                     else:
                         self.controller.set_channel_specs(i, ' ')
-                # self.controller.get_minimum_interval()
                 initialized = True
             except Exception as e:
                 import traceback
@@ -90,17 +92,25 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
 
         # Initialise les viewers avec le bon nombre de traces
         if initialized:
-            data_init = []
-            labels_init = []
-            for i in range(1, 9):
-                if self.settings.child("activated_channels", f"channel_{i}").value():
-                    data_init.append(np.array([0.0]))
-                    labels_init.append(f"channel_{i} [°C]")
-            self.dte_signal_temp.emit(DataToExport(name='Temperature',
-                                                   data=[DataFromPlugins(name='TC08',
-                                                                         data=data_init,
-                                                                         dim='Data0D',
-                                                                         labels=labels_init)]))
+            try:
+                data_init = []
+                labels_init = []
+                for i in range(1, 9):
+                    if self.settings.child("activated_channels", f"channel_{i}").value():
+                        data_init.append(np.array([0.0]))
+                        labels_init.append(f"channel_{i} [°C]")
+
+                if data_init:  # évite d'émettre une liste vide
+                    self.dte_signal_temp.emit(DataToExport(
+                        name='Temperature',
+                        data=[DataFromPlugins(name='TC08', data=data_init, dim='Data0D', labels=labels_init)]
+                    ))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self.emit_status(ThreadCommand('Update_Status', [f"Erreur init viewer : {e}"]))
+
+
         return info, initialized
 
     def close(self):
