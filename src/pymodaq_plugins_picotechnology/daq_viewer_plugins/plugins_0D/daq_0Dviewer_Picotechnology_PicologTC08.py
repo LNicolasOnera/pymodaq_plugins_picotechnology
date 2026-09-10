@@ -46,6 +46,7 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
         self.tc_type = self.settings.child("tc_type").value()
 
     def commit_settings(self, param: Parameter):
+
         if param.name() == 'device_serial_number':
             self.serial = param.value()
 
