@@ -60,7 +60,6 @@ class PicoLogTC08:
         self.handle = handle
         self.serial_number = self.read_serial(handle)
         PicoLogTC08._open_handles[self.serial_number] = (handle, self.tc08dll)
-        print(f"Ouverture automatique : {self.serial_number}", flush=True)
         return self.serial_number
 
     def open_unit_by_serial(self, serial_number: str):
@@ -91,7 +90,6 @@ class PicoLogTC08:
         self.handle = found_handle
         self.serial_number = serial_number
         PicoLogTC08._open_handles[serial_number] = (found_handle, self.tc08dll)
-        print(f"Ouverture {serial_number}")
         return found_handle
 
     def close_unit(self, handle: int = None):
