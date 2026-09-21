@@ -42,7 +42,6 @@ class PicoLogTC08:
             handle, prev_dll = cls._open_handles.pop(serial_number)
             try:
                 (dll or prev_dll).usb_tc08_close_unit(handle)
-                print(f"Handle précédent ({handle}) pour {serial_number} fermé de force.", flush=True)
             except Exception as e:
                 print(f"Échec fermeture handle précédent pour {serial_number} : {e}", flush=True)
 
