@@ -36,8 +36,9 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
         {'title': 'Device serial number :', 'name': 'device_serial_number', 'type': 'str'},
         {'title': 'TC type :', 'name': 'tc_type', 'type': 'str', 'value': 'K', 'readonly': True},
         {'title': 'Channels', 'name': 'channels', 'type': 'group', 'children': [
-            {'title': f'Channel {i}','name': f'channel_{i}','type': 'bool','value': False, 'renamable': False,'children':[
-                {'title': 'Name', 'name': 'ch_name', 'type': 'str', 'value': f'Channel {i}'},
+            {'title': f'Channel {i}', 'name': f'channel_{i}', 'type': 'group', 'children': [
+                {'title': 'Activated', 'name': 'activated', 'type': 'bool', 'value': False},
+                {'title': 'Ch name', 'name': 'ch_name', 'type': 'str', 'value': f'Channel {i}'},
             ]}
             for i in range(1, 10)
         ]},
@@ -77,7 +78,7 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
                 self.settings.child("device_serial_number").setValue(self.controller.serial_number)
                 self.serial = self.controller.serial_number
                 for i in range(1, 9):
-                    if self.settings['channels', f'channel_{i}']:
+                    if self.settings['channels', f'channel_{i}', 'activated']:
                         self.controller.set_channel_specs(i, self.tc_type)
                     else:
                         self.controller.set_channel_specs(i, ' ')
@@ -101,7 +102,7 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
                 data_init = []
                 labels_init = []
                 for i in range(1, 9):
-                    if self.settings['channels', f'channel_{i}']:
+                    if self.settings['channels', f'channel_{i}', 'activated']:
                         ch_name = self.settings.child('channels', f'channel_{i}', 'ch_name').value()
                         data_init.append(np.array([0.0]))
                         labels_init.append(ch_name)
@@ -130,7 +131,7 @@ class DAQ_0DViewer_Picotechnology_PicologTC08(DAQ_Viewer_base):
         data_tot = []
         labels = []
         for i in range(1, 9):
-            if self.settings['channels', f'channel_{i}']:
+            if self.settings['channels', f'channel_{i}', 'activated']:
                 ch_name = self.settings.child('channels', f'channel_{i}', 'ch_name').value()
                 data_tot.append(np.array([temp_array[i]]))
                 labels.append(ch_name)
